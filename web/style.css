@@ -45,7 +45,9 @@ h2{font-size:.93rem;font-weight:600;letter-spacing:.055em;text-transform:upperca
 .ph{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
 .ph h2{margin-bottom:7px}
 .ph .sub{font-size:.9rem;color:var(--muted);margin-left:auto}
-.gh{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.gh{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.gh .btns{display:flex;gap:6px}
+.gh .ghost{font-size:.82rem;padding:2px 8px}
 
 .ctl{margin-bottom:11px}
 .ctl label{display:flex;justify-content:space-between;align-items:baseline;
@@ -61,7 +63,7 @@ input[type=range]{width:100%;accent-color:var(--accent);height:18px;margin:0}
 .mat{border-top:1px solid var(--line);padding-top:9px;margin-top:6px}
 .mat .mh{display:flex;align-items:center;gap:8px;font-size:1.0rem;margin-bottom:6px;cursor:pointer}
 .mat .mh input{accent-color:var(--accent);margin:0}
-.mat .mh .sw{display:inline-block;width:20px;height:0;border-top:3px solid}
+.mat .mh .svsw{margin-right:2px}
 .mat.off .ctl{opacity:.4}
 .mat .ctl{margin-bottom:8px}
 .mat .ctl label{font-size:.95rem}

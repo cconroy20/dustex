@@ -2,21 +2,61 @@
    the choices.  validate.py checks this file against the Python on a set of cases
    (testjs.js runs it under node).
 
+   Two wavelength grids: the coarse one (80 per decade) for silicate and graphite, and a fine
+   one (500 per decade over 3-20 um) for PAHs and for the size-distribution sums.
+
    Units as in dustlib: wavelength in um, u_lambda in erg cm^-3 um^-1, powers in erg s^-1,
    cross sections in cm^2, energies in erg. */
 (function (root) {
 "use strict";
 
 const H = 6.62607015e-27, C = 2.99792458e10, KB = 1.380649e-16, EV = 1.602176634e-12;
-const UM = 1e-4, LYMAN_UM = 0.0912;
+const AMU = 1.66053906660e-24, UM = 1e-4;
 const XMAX = 80;          // h nu / k T beyond which a Planck term is dropped (< e^-70 of the peak)
-let ETOP = H * C / (LYMAN_UM * UM);            // the most energetic photon on the grid
 
 const Phys = { H, C, KB, EV, UM, ready: false };
-let NL = 0, LAM, WL, EPH, XT, B0, USTAR, UCMB, DLNLAM, LNE0;
-let AG, NA, AGLO, AGDL;                      // size grid
+let GC = null, GF = null;                    // coarse and fine grids
+let AG, NA, AGLO, AGDL;                      // size grid for silicate and graphite
 let TGE, LTGE, DLTGE, ESIL, EGRA;            // enthalpy tables
-let MSIL, EPS = {}, QT = {}, MATS;
+let MSIL, EPS = {}, QT = {}, MATS, PAG;
+let TOF_I = null, TOF_T = null;              // coarse -> fine interpolation
+
+// ------------------------------------------------------------------ grids
+// A wavelength grid with trapezoid weights in ln(lambda): int F dlambda = sum(wl * F)
+function makeGrid(lam, ustar, Tcmb) {
+  const n = lam.length, G = { n, lam, ustar };
+  G.wl = new Float64Array(n); G.eph = new Float64Array(n); G.xt = new Float64Array(n);
+  G.b0 = new Float64Array(n); G.ucmb = new Float64Array(n); G.lnl = new Float64Array(n);
+  for (let i = 0; i < n; i++) G.lnl[i] = Math.log(lam[i]);
+  for (let i = 0; i < n; i++) {
+    let w = 0;
+    if (i > 0) w += 0.5 * (G.lnl[i] - G.lnl[i - 1]);
+    if (i < n - 1) w += 0.5 * (G.lnl[i + 1] - G.lnl[i]);
+    G.wl[i] = w * lam[i];
+    const l = lam[i] * UM;
+    G.eph[i] = H * C / l;
+    G.xt[i] = H * C / (l * KB);                           // h nu / k
+    G.b0[i] = 2 * H * C * C / Math.pow(l, 5) * UM;        // B_lambda = b0 / expm1(xt / T)
+  }
+  for (let i = 0; i < n; i++) G.ucmb[i] = 4 * Math.PI * planck(G, i, Tcmb) / C;
+  G.egA = Float64Array.from({ length: n }, (_, k) => G.eph[n - 1 - k]);   // ascending
+  G.etop = G.eph[0];
+  return G;
+}
+function planck(G, i, T) {
+  const x = G.xt[i] / T;
+  return x < XMAX ? G.b0[i] / Math.expm1(x) : 0;
+}
+function integ(G, F) { let s = 0; for (let i = 0; i < G.n; i++) s += G.wl[i] * F[i]; return s; }
+Phys.planck = planck; Phys.integ = integ;
+
+// a coarse-grid array onto the fine grid, linear in ln(lambda) (as numpy's interp)
+function toFine(arr) {
+  const out = new Float64Array(GF.n);
+  for (let j = 0; j < GF.n; j++) out[j] = (1 - TOF_T[j]) * arr[TOF_I[j]] + TOF_T[j] * arr[TOF_I[j] + 1];
+  return out;
+}
+Phys.toFine = toFine;
 
 // ------------------------------------------------------------------ data
 Phys.init = function (meta, buf) {
@@ -25,28 +65,23 @@ Phys.init = function (meta, buf) {
     return a.dtype === "f8" ? new Float64Array(buf, a.offset, a.length)
                             : new Float32Array(buf, a.offset, a.length);
   };
-  LAM = get("lam"); NL = LAM.length;
-  DLNLAM = Math.log(LAM[1] / LAM[0]);
-  WL = new Float64Array(NL); EPH = new Float64Array(NL); XT = new Float64Array(NL);
-  B0 = new Float64Array(NL); UCMB = new Float64Array(NL);
-  for (let i = 0; i < NL; i++) {
-    const w = (i === 0 || i === NL - 1) ? 0.5 * DLNLAM : DLNLAM;
-    WL[i] = w * LAM[i];                                   // trapezoid in ln lambda
-    const l = LAM[i] * UM;
-    EPH[i] = H * C / l;
-    XT[i] = H * C / (l * KB);                             // h nu / k
-    B0[i] = 2 * H * C * C / Math.pow(l, 5) * UM;          // B_lambda = B0 / expm1(XT / T)
+  GC = makeGrid(get("lam"), get("ustar"), meta.T_CMB);
+  GF = makeGrid(get("lamf"), get("ustarf"), meta.T_CMB);
+  TOF_I = new Int32Array(GF.n); TOF_T = new Float64Array(GF.n);
+  for (let j = 0, k = 0; j < GF.n; j++) {
+    const x = GF.lnl[j];
+    if (x <= GC.lnl[0]) { TOF_I[j] = 0; TOF_T[j] = 0; continue; }
+    if (x >= GC.lnl[GC.n - 1]) { TOF_I[j] = GC.n - 2; TOF_T[j] = 1; continue; }
+    while (GC.lnl[k + 1] < x) k++;
+    TOF_I[j] = k; TOF_T[j] = (x - GC.lnl[k]) / (GC.lnl[k + 1] - GC.lnl[k]);
   }
-  for (let i = 0; i < NL; i++) UCMB[i] = 4 * Math.PI * planck(i, meta.T_CMB) / C;
-  LNE0 = Math.log(EPH[NL - 1]);                           // smallest photon energy
-  ETOP = EPH[0];
-  USTAR = get("ustar");
   MSIL = get("m_sil");
   for (const k of ["pa0.01", "pa0.10", "pe0.01", "pe0.10"]) EPS[k] = get("eps_" + k);
   QT.sil = get("q_sil"); QT.gra = get("q_gra");
   NA = meta.a_grid.n; AGLO = meta.a_grid.lo; AGDL = (meta.a_grid.hi - meta.a_grid.lo) / (NA - 1);
   AG = new Float64Array(NA);
   for (let i = 0; i < NA; i++) AG[i] = Math.pow(10, AGLO + i * AGDL);
+  PAG = get("pah_grid");
   TGE = get("tgrid_e"); ESIL = get("e_sil"); EGRA = get("e_gra");
   LTGE = new Float64Array(TGE.length);
   for (let i = 0; i < TGE.length; i++) LTGE[i] = Math.log(TGE[i]);
@@ -54,17 +89,10 @@ Phys.init = function (meta, buf) {
   MATS = meta.mat;
   Phys.T_CMB = meta.T_CMB;
   Phys.MRN = meta.mrn;
-  Phys.LAM = LAM; Phys.NL = NL; Phys.A_GRID = AG; Phys.WL = WL; Phys.USTAR = USTAR; Phys.UCMB = UCMB;
+  Phys.GC = GC; Phys.GF = GF;
+  Phys.LAM = GC.lam; Phys.LAMF = GF.lam; Phys.A_GRID = AG; Phys.PAH_GRID = PAG;
   Phys.ready = true;
 };
-
-function planck(i, T) {
-  const x = XT[i] / T;
-  return x < XMAX ? B0[i] / Math.expm1(x) : 0;
-}
-Phys.planck = planck;
-function integ(F) { let s = 0; for (let i = 0; i < NL; i++) s += WL[i] * F[i]; return s; }
-Phys.integ = integ;
 
 // ------------------------------------------------------------------ materials
 function nAtoms(mat, a) { return MATS[mat].atoms_per_cm3 * 4 / 3 * Math.PI * Math.pow(a * UM, 3); }
@@ -79,18 +107,19 @@ function csqrt(re, im) {
   return [Math.abs(im) / (2 * t), im >= 0 ? t : -t];
 }
 
-// refractive index on the grid: [re, im] arrays; graphite gives two (E par, E perp to c)
+// refractive index on the coarse grid: [re, im]; graphite gives two (E par, E perp to c)
 function refrIndex(mat, a) {
+  const n = GC.n;
   if (mat === "sil") {
-    const re = new Float64Array(NL), im = new Float64Array(NL);
-    for (let i = 0; i < NL; i++) { re[i] = MSIL[2 * i]; im[i] = MSIL[2 * i + 1]; }
+    const re = new Float64Array(n), im = new Float64Array(n);
+    for (let i = 0; i < n; i++) { re[i] = MSIL[2 * i]; im[i] = MSIL[2 * i + 1]; }
     return [[re, im]];
   }
   const w = Math.min(1, Math.max(0, Math.log10(a / 0.01)));
   return ["pa", "pe"].map(o => {
     const e1 = EPS[o + "0.01"], e2 = EPS[o + "0.10"];
-    const re = new Float64Array(NL), im = new Float64Array(NL);
-    for (let i = 0; i < NL; i++) {
+    const re = new Float64Array(n), im = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
       const m = csqrt((1 - w) * e1[2 * i] + w * e2[2 * i], (1 - w) * e1[2 * i + 1] + w * e2[2 * i + 1]);
       re[i] = m[0]; im[i] = m[1];
     }
@@ -143,12 +172,12 @@ function mie(x, mr, mi) {
 }
 Phys.mie = mie;
 
-// Q_abs, Q_sca, g on the grid for one grain, by Mie theory
+// Q_abs, Q_sca, g on the coarse grid for one silicate or graphite grain, by Mie theory
 function optics(mat, a) {
-  const ms = refrIndex(mat, a);
-  const Qa = new Float64Array(NL), Qs = new Float64Array(NL), g = new Float64Array(NL);
-  for (let i = 0; i < NL; i++) {
-    const x = 2 * Math.PI * a / LAM[i];
+  const n = GC.n, ms = refrIndex(mat, a);
+  const Qa = new Float64Array(n), Qs = new Float64Array(n), g = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = 2 * Math.PI * a / GC.lam[i];
     if (mat === "sil") {
       const r = mie(x, ms[0][0][i], ms[0][1][i]);
       Qa[i] = r[0] - r[1]; Qs[i] = r[1]; g[i] = r[2];
@@ -162,33 +191,146 @@ function optics(mat, a) {
 }
 Phys.optics = optics;
 
-// Q_abs and Q_sca from the table at grid node i (float32, as shipped)
+// Q_abs and Q_sca from the table at size-grid node i (float32, as shipped)
 function tableOptics(mat, i) {
-  const T = QT[mat], Qa = new Float64Array(NL), Qs = new Float64Array(NL);
-  for (let k = 0; k < NL; k++) { Qa[k] = T[i * NL + k]; Qs[k] = T[(NA + i) * NL + k]; }
+  const n = GC.n, T = QT[mat], Qa = new Float64Array(n), Qs = new Float64Array(n);
+  for (let k = 0; k < n; k++) { Qa[k] = T[i * n + k]; Qs[k] = T[(NA + i) * n + k]; }
   return { Qabs: Qa, Qsca: Qs, g: null };
 }
 Phys.tableOptics = tableOptics;
 
-// ------------------------------------------------------------------ enthalpy
-function Enthalpy(mat, a) {
-  this.N = nAtoms(mat, a);
-  const e = mat === "sil" ? ESIL : EGRA, n = e.length;
-  this.lE = new Float64Array(n);
-  for (let i = 0; i < n; i++) this.lE[i] = Math.log((this.N - 2) * e[i]);
+// ------------------------------------------------------------------ PAHs
+// Li & Draine (2001) Eqs. (5)-(11) with the band parameters of Draine & Li (2007) Table 1:
+// [lambda_j (um), gamma_j, sigma_int neutral, ionized (1e-20 cm/C), scaled by H/C?].
+// See dustlib.PAH_BANDS for the notes.
+const PAH_UV = [[0.0722, 0.195, 7.97e7], [0.2175, 0.217, 1.23e7]];
+const PAH_BANDS = [
+  [1.050, 0.055, 0.0, 2.0e4, 0], [1.260, 0.11, 0.0, 0.078, 0], [1.905, 0.09, 0.0, -146.5, 0],
+  [3.300, 0.012, 394.0, 89.4, 1], [5.270, 0.034, 2.5, 20.0, 0], [5.700, 0.035, 4.0, 32.0, 0],
+  [6.220, 0.030, 29.4, 235.0, 0], [6.690, 0.070, 7.35, 59.0, 0], [7.417, 0.126, 20.8, 181.0, 0],
+  [7.598, 0.044, 18.1, 163.0, 0], [7.850, 0.053, 21.9, 197.0, 0], [8.330, 0.052, 6.94, 48.0, 1],
+  [8.610, 0.039, 27.8, 194.0, 1], [10.68, 0.020, 0.3, 0.3, 1], [11.23, 0.012, 18.9, 17.7, 1],
+  [11.33, 0.032, 52.0, 49.0, 1], [11.99, 0.045, 24.2, 20.5, 1], [12.62, 0.042, 35.0, 31.0, 1],
+  [12.69, 0.013, 1.3, 1.3, 1], [13.48, 0.040, 8.0, 8.0, 1], [14.19, 0.025, 0.45, 0.45, 0],
+  [15.90, 0.020, 0.04, 0.04, 0], [16.45, 0.014, 0.5, 0.5, 0], [17.04, 0.065, 2.22, 2.22, 0],
+  [17.375, 0.012, 0.11, 0.11, 0], [17.87, 0.016, 0.067, 0.067, 0], [18.92, 0.10, 0.10, 0.17, 0],
+  [15.0, 0.8, 50.0, 50.0, 0]];
+const PAH_AMIN = 3.55e-4;                      // um; N_C = 20
+const HC_OVER_K = 1.4387769, CH_MODES = [886.0, 1161.0, 3030.0];
+const M_C = 12.011 * AMU, M_H = 1.008 * AMU;
+Phys.PAH_AMIN = PAH_AMIN;
+
+function ncPah(a) { return 460.0 * Math.pow(a / 1e-3, 3); }
+function hcRatio(NC) { return NC <= 25 ? 0.5 : NC <= 100 ? 0.5 * Math.sqrt(25.0 / Math.max(NC, 1)) : 0.25; }
+function drude(l, lj, gj, sig) {
+  const d = l / lj - lj / l;
+  return 2 / Math.PI * gj * lj * UM * sig * 1e-20 / (d * d + gj * gj);
 }
-Enthalpy.prototype.E = function (T) {
+Phys.ncPah = ncPah; Phys.hcRatio = hcRatio;
+
+// C_abs / N_C (cm^2) on the fine grid for a PAH with NC carbon atoms
+function pahCabsPerC(NC, charge) {
+  const n = GF.n, out = new Float64Array(n), ion = charge === "ion", hc = hcRatio(NC);
+  const M = (NC < 40 ? 0.3 : 0.4) * NC;
+  const lc = ion ? 1 / (2.282 / Math.sqrt(M) + 0.889) : 1 / (3.804 / Math.sqrt(M) + 1.052);
+  for (let i = 0; i < n; i++) {
+    const l = GF.lam[i], x = 1 / l;
+    let v = 0;
+    if (x > 10 && x < 15) v = drude(l, ...PAH_UV[0]) + (-3.0 + 1.35 * x) * 1e-18;
+    else if (x > 7.7 && x <= 10) v = (66.302 - 24.367 * x + 2.950 * x * x - 0.1057 * x * x * x) * 1e-18;
+    else if (x > 5.9 && x <= 7.7) {
+      const z = x - 5.9;
+      v = drude(l, ...PAH_UV[1]) + (1.8687 + 0.1905 * x + 0.4175 * z * z + 0.04370 * z * z * z) * 1e-18;
+    } else if (x > 3.3 && x <= 5.9) v = drude(l, ...PAH_UV[1]) + (1.8687 + 0.1905 * x) * 1e-18;
+    else if (x <= 3.3) {
+      const y = lc / l;
+      const cut = Math.atan(1e3 * Math.pow(y - 1, 3) / y) / Math.PI + 0.5;
+      v = 34.58e-18 * Math.pow(10, -3.431 / x) * cut;
+      for (const b of PAH_BANDS) v += drude(l, b[0], b[1], (ion ? b[3] : b[2]) * (b[4] ? hc : 1));
+    }
+    if (ion) v += 3.5e-19 * Math.pow(10, -1.45 / x) * Math.exp(-0.1 * x * x);
+    out[i] = v;
+  }
+  return out;
+}
+Phys.pahCabsPerC = pahCabsPerC;
+
+function xiGra(a) { return a <= 0.005 ? 0.01 : 0.01 + 0.99 * (1 - Math.pow(0.005 / a, 3)); }
+
+// graphite C_abs, C_sca, g on the fine grid: Mie on the coarse grid at max(a, 0.001 um),
+// scaled to a in the small-particle limit, then interpolated
+function graphiteOnFine(a) {
+  const ae = Math.max(a, 1e-3), o = optics("gra", ae), geo = Math.PI * Math.pow(ae * UM, 2), s = a / ae;
+  const ca = new Float64Array(GC.n), cs = new Float64Array(GC.n);
+  for (let i = 0; i < GC.n; i++) { ca[i] = geo * o.Qabs[i]; cs[i] = geo * o.Qsca[i]; }
+  const fa = toFine(ca), fs = toFine(cs), fg = toFine(o.g), s3 = s * s * s, s6 = s3 * s3;
+  for (let j = 0; j < GF.n; j++) { fa[j] *= s3; fs[j] *= s6; }
+  return [fa, fs, fg];
+}
+
+// Q_abs, Q_sca, g on the fine grid for a PAH-graphite grain (floored at zero; see dustlib)
+function pahOptics(a, charge) {
+  const NC = ncPah(a), [ca, cs, g] = graphiteOnFine(a), cper = pahCabsPerC(NC, charge);
+  const xi = xiGra(a), geo = Math.PI * Math.pow(a * UM, 2);
+  const Qa = new Float64Array(GF.n), Qs = new Float64Array(GF.n);
+  for (let j = 0; j < GF.n; j++) {
+    Qa[j] = Math.max((1 - xi) * NC * cper[j] + xi * ca[j], 0) / geo;
+    Qs[j] = cs[j] / geo;
+  }
+  return { Qabs: Qa, Qsca: Qs, g };
+}
+Phys.pahOptics = pahOptics;
+
+// ------------------------------------------------------------------ enthalpy
+// energy of the lowest vibrational mode (erg); see dustlib.e_first_mode
+function eFirstMode(mat, N) {
+  if (mat === "sil") {
+    let best = Infinity;
+    for (const [n, th, Nm] of [[2, 500.0, 2 * (N - 2)], [3, 1500.0, N - 2]]) {
+      const beta = (Math.pow(Nm, 1 - n / 3) - 1) / (2 * Nm - 1);
+      best = Math.min(best, KB * th * Math.pow((1 - beta) * 0.5 / Nm + beta, 1 / n));
+    }
+    return best;
+  }
+  const NC = N, Nm = N - 2;
+  const beta = NC <= 54 ? 0 : NC <= 102 ? (NC - 54) / 52 / (2 * Nm - 1)
+             : ((NC - 2) / 52 * Math.pow(102 / NC, 2 / 3) - 1) / (2 * Nm - 1);
+  return KB * 863.0 * Math.sqrt((1 - beta) * 0.5 / Nm + beta);
+}
+Phys.eFirstMode = eFirstMode;
+function tabE(lE, T) {
   const n = LTGE.length, u = (Math.log(T) - LTGE[0]) / DLTGE;
-  if (u <= 0) return Math.exp(this.lE[0]);
-  if (u >= n - 1) return Math.exp(this.lE[n - 1]);
-  // the grid is uniform in ln T; locate by index and confirm against the stored nodes
+  if (u <= 0) return Math.exp(lE[0]);
+  if (u >= n - 1) return Math.exp(lE[n - 1]);
   let k = Math.floor(u);
   const lt = Math.log(T);
   while (k > 0 && LTGE[k] > lt) k--;
   while (k < n - 2 && LTGE[k + 1] < lt) k++;
   const t = (lt - LTGE[k]) / (LTGE[k + 1] - LTGE[k]);
-  return Math.exp(this.lE[k] + t * (this.lE[k + 1] - this.lE[k]));
-};
+  return Math.exp(lE[k] + t * (lE[k + 1] - lE[k]));
+}
+function Enthalpy(mat, a) {
+  const n = TGE.length;
+  this.lE = new Float64Array(n);
+  if (mat === "pah") {
+    // N_H Einstein oscillators per C-H mode plus the Debye C-C modes (DL01)
+    this.NC = ncPah(a); this.NH = hcRatio(this.NC) * this.NC; this.N = this.NC + this.NH;
+    this.E1 = eFirstMode("pah", this.NC);
+    this.mass = this.NC * M_C + this.NH * M_H;
+    for (let i = 0; i < n; i++) {
+      const T = TGE[i];
+      let ech = 0;
+      for (const w of CH_MODES) ech += KB * HC_OVER_K * w / Math.expm1(Math.min(HC_OVER_K * w / T, 700));
+      this.lE[i] = Math.log(this.NH * ech + (this.NC - 2) * EGRA[i]);
+    }
+  } else {
+    this.N = nAtoms(mat, a);
+    this.E1 = eFirstMode(mat, this.N);
+    const e = mat === "sil" ? ESIL : EGRA;
+    for (let i = 0; i < n; i++) this.lE[i] = Math.log((this.N - 2) * e[i]);
+  }
+}
+Enthalpy.prototype.E = function (T) { return tabE(this.lE, T); };
 Enthalpy.prototype.T = function (E) {
   const lE = this.lE, n = lE.length, le = Math.log(E);
   if (le <= lE[0]) return TGE[0];
@@ -209,36 +351,39 @@ const SIGMA_EQ = 0.01, M0 = 400, K_COOL = 30, DELTA = 0.03, M_MAX = 1500;
 const TRIM = 1e-14, TRIM_POW = 1e-10;
 Phys.SIGMA_EQ = SIGMA_EQ;
 
-function Grain(mat, a, U, opt) {
-  this.mat = mat; this.a = a; this.U = U;
-  const o = opt || optics(mat, a);
+// mat "sil", "gra" (coarse grid) or "pah" (fine grid, with charge "neu" or "ion")
+function Grain(mat, a, U, opt, charge) {
+  this.mat = mat; this.a = a; this.U = U; this.charge = charge || "neu";
+  const G = this.G = mat === "pah" ? GF : GC, n = G.n;
+  const o = opt || (mat === "pah" ? pahOptics(a, this.charge) : optics(mat, a));
   this.Qabs = o.Qabs; this.Qsca = o.Qsca; this.g = o.g;
   const geo = Math.PI * Math.pow(a * UM, 2);
   this.geo = geo;
-  this.Cabs = new Float64Array(NL);
-  this.u = new Float64Array(NL); this.us = new Float64Array(NL);
-  this.pabsLam = new Float64Array(NL);
-  for (let i = 0; i < NL; i++) {
+  this.Cabs = new Float64Array(n);
+  this.u = new Float64Array(n); this.us = new Float64Array(n);
+  this.pabsLam = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
     this.Cabs[i] = geo * this.Qabs[i];
-    this.us[i] = U * USTAR[i];
-    this.u[i] = this.us[i] + UCMB[i];
+    this.us[i] = U * G.ustar[i];
+    this.u[i] = this.us[i] + G.ucmb[i];
     this.pabsLam[i] = C * this.Cabs[i] * this.u[i];
   }
-  this.mass = grainMass(mat, a);
   this.H = new Enthalpy(mat, a);
-  this.Pabs = integ(this.pabsLam);
+  this.mass = mat === "pah" ? this.H.mass : grainMass(mat, a);
+  this.Pabs = integ(G, this.pabsLam);
   this.Teq = this.equilibriumT();
 }
 
 // emitted power at T; with Emax, only photons less energetic than Emax
 Grain.prototype.L = function (T, Emax) {
+  const G = this.G;
   let s = 0;
   const lim = Emax === undefined ? Infinity : Emax;
-  for (let i = 0; i < NL; i++) {
-    if (EPH[i] >= lim) continue;
-    const x = XT[i] / T;
+  for (let i = 0; i < G.n; i++) {
+    if (G.eph[i] >= lim) continue;
+    const x = G.xt[i] / T;
     if (x >= XMAX) continue;
-    s += WL[i] * this.Cabs[i] * B0[i] / Math.expm1(x);
+    s += G.wl[i] * this.Cabs[i] * G.b0[i] / Math.expm1(x);
   }
   return 4 * Math.PI * s;
 };
@@ -252,13 +397,21 @@ Grain.prototype.equilibriumT = function () {
   return Math.exp(0.5 * (lo + hi));
 };
 
+// the spectrum the grain would emit at its equilibrium temperature
+Grain.prototype.eqEmission = function () {
+  const G = this.G, em = new Float64Array(G.n);
+  for (let i = 0; i < G.n; i++) em[i] = 4 * Math.PI * this.Cabs[i] * planck(G, i, this.Teq);
+  return em;
+};
+
 // starlight photon statistics: absorption rate, power, and int (h nu) dP
 Grain.prototype.photonStats = function () {
   if (this._ps) return this._ps;
+  const G = this.G;
   let R = 0, S1 = 0, S2 = 0;
-  for (let i = 0; i < NL; i++) {
+  for (let i = 0; i < G.n; i++) {
     const p = C * this.Cabs[i] * this.us[i];
-    R += WL[i] * p / EPH[i]; S1 += WL[i] * p; S2 += WL[i] * p * EPH[i];
+    R += G.wl[i] * p / G.eph[i]; S1 += G.wl[i] * p; S2 += G.wl[i] * p * G.eph[i];
   }
   return (this._ps = [R, S1, S2]);
 };
@@ -273,20 +426,24 @@ Grain.prototype.sigmaT = function () {
 // cumulative int f dE and int E f dE, f = C_abs u_E, on the ascending photon-energy grid
 Grain.prototype.cumulants = function () {
   if (this._cum) return this._cum;
-  const I0 = new Float64Array(NL), I1 = new Float64Array(NL);
-  let pg0 = 0, pg1 = 0;
-  for (let k = 0; k < NL; k++) {
-    const i = NL - 1 - k, E = EPH[i];
-    const f = this.Cabs[i] * this.u[i] * LAM[i] / E;
+  const G = this.G, n = G.n;
+  const I0 = new Float64Array(n), I1 = new Float64Array(n);
+  let pg0 = 0, pg1 = 0, pE = 0;
+  for (let k = 0; k < n; k++) {
+    const i = n - 1 - k, E = G.eph[i];
+    const f = this.Cabs[i] * this.u[i] * G.lam[i] / E;
     const g0 = f * E, g1 = f * E * E;
-    if (k > 0) { I0[k] = I0[k - 1] + 0.5 * (g0 + pg0) * DLNLAM; I1[k] = I1[k - 1] + 0.5 * (g1 + pg1) * DLNLAM; }
-    pg0 = g0; pg1 = g1;
+    if (k > 0) {
+      const dl = Math.log(E / pE);
+      I0[k] = I0[k - 1] + 0.5 * (g0 + pg0) * dl; I1[k] = I1[k - 1] + 0.5 * (g1 + pg1) * dl;
+    }
+    pg0 = g0; pg1 = g1; pE = E;
   }
   return (this._cum = [I0, I1]);
 };
 
 Grain.prototype.stochastic = function (Mfirst) {
-  const M = Mfirst || M0, Hh = this.H;
+  const M = Mfirst || M0, Hh = this.H, G = this.G;
   const Teq = this.Teq, Eeq = Hh.E(Teq);
   const sE = this.sigmaT()[1];
   const R = this.photonStats()[0];
@@ -303,7 +460,10 @@ Grain.prototype.stochastic = function (Mfirst) {
     }
     prev = [T, v];
   }
-  const Elo = Math.max(Hh.E(Phys.T_CMB), Math.min(Eeq - 10 * sE, Hh.E(Tcool)));
+  // never below the lowest vibrational mode, nor two quanta of the longest grid wavelength;
+  // energies under E1 belong to the ground state, which the bottom bin stands for (see dustlib)
+  const Erad = 2 * G.eph[G.n - 1];
+  const Elo = Math.max(Hh.E(Phys.T_CMB), Erad, Hh.E1, Math.min(Eeq - 10 * sE, Hh.E(Tcool)));
   let Ehi = Eeq + 13.6 * EV + 10 * sE;
   let res, it;
   for (it = 0; it < 8; it++) {
@@ -360,10 +520,10 @@ Grain.prototype.secondGrid = function (T, P, E, jl, ju, M) {
 };
 
 // The thermal-continuous steady state on the temperature levels T (DL01 Sects. 4, 7.2, 9.2).
-// Upward rates are banded (no photon carries more than ETOP) apart from the row into the
-// top bin, which is handled as a running sum.
+// Upward rates are banded (no photon carries more than the top grid energy) apart from the
+// row into the top bin, which is handled as a running sum.
 Grain.prototype.solve = function (T) {
-  const Hh = this.H, M = T.length - 1;
+  const Hh = this.H, M = T.length - 1, G = this.G, NG = G.n, ETOP = G.etop;
   const E = new Float64Array(M + 1);
   for (let j = 0; j <= M; j++) E[j] = Hh.E(T[j]);
   const Emin = new Float64Array(M + 1), Emax = new Float64Array(M + 1), dE = new Float64Array(M + 1);
@@ -373,17 +533,17 @@ Grain.prototype.solve = function (T) {
     dE[j] = Emax[j] - Emin[j];
   }
   const [I0, I1] = this.cumulants();
-  const I0top = I0[NL - 1], I1top = I1[NL - 1];
+  const I0top = I0[NG - 1], I1top = I1[NG - 1];
   // ascending photon energies; the cumulants are interpolated linearly in E
-  const EgA = this._egA || (this._egA = Float64Array.from({ length: NL }, (_, k) => EPH[NL - 1 - k]));
-  const Eg0 = EgA[0], EgTop = EgA[NL - 1];
+  const EgA = G.egA;
+  const Eg0 = EgA[0], EgTop = EgA[NG - 1];
   const at = (I, k, w) => I[k] + (w - EgA[k]) / (EgA[k + 1] - EgA[k]) * (I[k + 1] - I[k]);
   const locate = w => {                    // k with EgA[k] <= w < EgA[k+1]
-    let lo = 0, hi = NL - 1;
+    let lo = 0, hi = NG - 1;
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if (EgA[m] > w) hi = m; else lo = m; }
     return lo;
   };
-  const cum = (I, w) => (w <= Eg0 ? 0 : w >= EgTop ? I[NL - 1] : at(I, locate(w), w));
+  const cum = (I, w) => (w <= Eg0 ? 0 : w >= EgTop ? I[NG - 1] : at(I, locate(w), w));
   // band: column l holds A[u, l] for u = l+1 .. ulim[l] (all < M); top[l] = A[M, l]
   const ulim = new Int32Array(M + 1), off = new Int32Array(M + 2);
   let up = 1, wid = 0;
@@ -423,9 +583,9 @@ Grain.prototype.solve = function (T) {
       let W2, c0W2, c1W2, c0W3, c1W3;
       if (D2[k] <= D1[k + 1]) { W2 = D2[k]; c0W2 = c02[k]; c1W2 = c12[k]; c0W3 = c01[k + 1]; c1W3 = c11[k + 1]; }
       else { W2 = D1[k + 1]; c0W2 = c01[k + 1]; c1W2 = c11[k + 1]; c0W3 = c02[k]; c1W3 = c12[k]; }
-      const G = ((c1W2 - c11[k]) - W1 * (c0W2 - c01[k]) + Math.min(dE[l], dE[u]) * (c0W3 - c0W2)
+      const Gk = ((c1W2 - c11[k]) - W1 * (c0W2 - c01[k]) + Math.min(dE[l], dE[u]) * (c0W3 - c0W2)
                  + W4 * (c02[k + 1] - c0W3) - (c12[k + 1] - c1W3)) / (dE[u] * dE[l]);
-      band[off[l] + k] = C * dE[u] / (E[u] - E[l]) * G;
+      band[off[l] + k] = C * dE[u] / (E[u] - E[l]) * Gk;
     }
     const W1 = Emin[M] - Emax[l], Wc = Emin[M] - Emin[l], W1c = Math.max(W1, 0);
     const ramp = (cum(I1, Wc) - cum(I1, W1c)) - W1 * (cum(I0, Wc) - cum(I0, W1c));
@@ -441,7 +601,7 @@ Grain.prototype.solve = function (T) {
   // continuous cooling
   const down = new Float64Array(M + 1), Dn = new Float64Array(M + 1);
   for (let u = 0; u <= M; u++) down[u] = this.L(T[u], E[u]);
-  for (let u = 1; u <= M; u++) Dn[u] = down[u] / (E[u] - E[u - 1]);
+  for (let u = 1; u <= M; u++) Dn[u] = Math.max(down[u], 1e-300) / (E[u] - E[u - 1]);
   // Guhathakurta & Draine recursion; lmin[j] = smallest l whose band reaches j
   const X = new Float64Array(M + 1);
   X[0] = 1;
@@ -461,36 +621,65 @@ Grain.prototype.solve = function (T) {
   for (let j = 0; j <= M; j++) sum += X[j];
   const P = new Float64Array(M + 1);
   let pem = 0;
-  for (let j = 0; j <= M; j++) { P[j] = X[j] / sum; pem += P[j] * down[j]; }
-  return { T, P, E, down, Pemit: pem };
+  for (let j = 0; j <= M; j++) { P[j] = X[j] / sum; if (j > 0) pem += P[j] * down[j]; }
+  // the bottom bin has no downward transition: the ground state (or empty); it radiates nothing
+  return { T, P, E, down, Pemit: pem, ground: E[0] <= 1.0001 * Hh.E1 ? P[0] : 0 };
 };
 
 // emitted power per um per grain; also the temperatures and probabilities behind it
 Grain.prototype.emission = function () {
-  const em = new Float64Array(NL);
+  const G = this.G, NG = G.n;
   const sT = this.sigmaT()[0];
-  if (sT < SIGMA_EQ) {
-    for (let i = 0; i < NL; i++) em[i] = 4 * Math.PI * this.Cabs[i] * planck(i, this.Teq);
-    return { em, T: [this.Teq], P: [1], stochastic: false, sigmaT: sT };
-  }
+  if (sT < SIGMA_EQ) return { em: this.eqEmission(), T: [this.Teq], P: [1], stochastic: false, sigmaT: sT };
+  const em = new Float64Array(NG);
   const r = this.stochastic();
-  for (let j = 0; j < r.T.length; j++) {
+  for (let j = 1; j < r.T.length; j++) {                  // the bottom bin radiates nothing
     const Pj = r.P[j];
     if (Pj < 1e-30) continue;
     const Tj = r.T[j], Ej = r.E[j];
-    for (let i = 0; i < NL; i++) {
-      if (EPH[i] >= Ej) continue;
-      const x = XT[i] / Tj;
+    for (let i = 0; i < NG; i++) {
+      if (G.eph[i] >= Ej) continue;
+      const x = G.xt[i] / Tj;
       if (x >= XMAX) continue;
-      em[i] += Pj * B0[i] / Math.expm1(x);
+      em[i] += Pj * G.b0[i] / Math.expm1(x);
     }
   }
-  for (let i = 0; i < NL; i++) em[i] *= 4 * Math.PI * this.Cabs[i];
-  return { em, T: r.T, P: r.P, E: r.E, stochastic: true, sigmaT: sT, Pemit: r.Pemit };
+  for (let i = 0; i < NG; i++) em[i] *= 4 * Math.PI * this.Cabs[i];
+  return { em, T: r.T, P: r.P, E: r.E, down: r.down, ground: r.ground, stochastic: true, sigmaT: sT, Pemit: r.Pemit };
 };
 Phys.Grain = Grain;
 
+// percentiles of a distribution over levels T (interpolated in ln T within a level)
+function percentiles(T, P, qs) {
+  if (T.length === 1) return qs.map(() => T[0]);
+  const out = [];
+  let c = 0, j = 0;
+  for (const q of qs) {
+    while (j < T.length - 1 && c + P[j] < q) { c += P[j]; j++; }
+    const f = P[j] > 0 ? Math.min(1, Math.max(0, (q - c) / P[j])) : 0;
+    const lo = j > 0 ? Math.sqrt(T[j - 1] * T[j]) : T[0];
+    const hi = j < T.length - 1 ? Math.sqrt(T[j] * T[j + 1]) : T[j];
+    out.push(lo * Math.pow(hi / lo, f));
+  }
+  return out;
+}
+Phys.percentiles = percentiles;
+
+// temperatures below which a fraction q of the power is radiated (levels j >= 1, weights P_j L_j)
+function powerPercentiles(r, qs) {
+  if (!r.stochastic) return qs.map(() => r.T[0]);
+  const w = Array.from(r.P, (p, j) => (j === 0 ? 0 : p * r.down[j]));
+  const tot = w.reduce((a, b) => a + b, 0);
+  return percentiles(r.T, w.map(v => v / tot), qs);
+}
+Phys.powerPercentiles = powerPercentiles;
+
 // ------------------------------------------------------------------ size distributions
+const SIZE_BINS = [[0, 0.01], [0.01, 0.1], [0.1, Infinity]];
+Phys.SIZE_BINS = SIZE_BINS;
+const binOf = a => SIZE_BINS.findIndex(r => a >= r[0] && a < r[1]);
+
+// power laws (silicate, graphite): dn/da = A a^-q on [amin, amax], normalized to abund ppm
 const NSUB = 8;
 function powerlawWeights(mat, q, amin, amax, abund) {
   const step = Math.LN10 * AGDL;
@@ -511,41 +700,69 @@ function powerlawWeights(mat, q, amin, amax, abund) {
 }
 Phys.powerlawWeights = powerlawWeights;
 
-// fractional index of radius a on the size grid
-function aIndex(a) {
-  const u = (Math.log10(a) - AGLO) / AGDL;
-  let i = Math.floor(u);
-  i = Math.max(0, Math.min(NA - 2, i));
-  // match numpy's searchsorted on the stored nodes at exact boundaries
-  const la = Math.log(a);
-  while (i > 0 && Math.log(AG[i]) >= la) i--;
-  while (i < NA - 2 && Math.log(AG[i + 1]) < la) i++;
-  return [i, (la - Math.log(AG[i])) / (Math.log(AG[i + 1]) - Math.log(AG[i]))];
+// dn/da = A a^-q (a in um, per um per H) for the normalization of powerlawWeights
+function powerlawA(mat, q, amin, amax, abund) {
+  const { a, w } = powerlawWeights(mat, q, amin, amax, abund);
+  const dl = Math.log(a[1] / a[0]);
+  return w[1] / (Math.pow(a[1], 1 - q) * dl);
 }
+Phys.powerlawA = powerlawA;
 
-const SIZE_BINS = [[0, 0.01], [0.01, 0.1], [0.1, Infinity]];
-Phys.SIZE_BINS = SIZE_BINS;
+// PAHs: log-normal dn/da = (n0/a) exp[-ln^2(a/a0) / 2 sigma^2] on [PAH_AMIN, pahAmax]
+function pahAmax(a0, sigma) { return Math.min(0.05, Math.max(2 * a0, a0 * Math.exp(4 * sigma))); }
+function lognormalWeights(a0, sigma, abund) {
+  const lo = Math.log(PAH_AMIN), hi = Math.log(pahAmax(a0, sigma));
+  const n = Math.max(Math.ceil((hi - lo) / Math.LN10 * 120) + 1, 2);
+  const a = new Float64Array(n), w = new Float64Array(n), dl = (hi - lo) / (n - 1);
+  let norm = 0;
+  for (let k = 0; k < n; k++) {
+    const lx = lo + k * dl;
+    a[k] = Math.exp(lx);
+    const tw = (k === 0 || k === n - 1) ? 0.5 * dl : dl;
+    const z = (lx - Math.log(a0)) / sigma;
+    w[k] = Math.exp(-0.5 * z * z) * tw;
+    norm += w[k] * ncPah(a[k]);
+  }
+  const A = abund * 1e-6 / norm;
+  for (let k = 0; k < n; k++) w[k] *= A;
+  return { a, w, n0: A };
+}
+Phys.lognormalWeights = lognormalWeights; Phys.pahAmax = pahAmax;
+Phys.pahMass = a => { const NC = ncPah(a); return NC * M_C + hcRatio(NC) * NC * M_H; };
 
-// Optical depths per H (cm^2) and mass per H for one material
+// fractional position of radius a among nodes (numpy searchsorted, side left)
+function nodeIndex(nodes, a, clampEnds) {
+  const n = nodes.length;
+  let la = Math.log(a);
+  if (clampEnds) la = Math.min(Math.max(la, Math.log(nodes[0])), Math.log(nodes[n - 1]));
+  let lo = 0, hi = n;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (Math.log(nodes[m]) < la) lo = m + 1; else hi = m; }
+  const i = Math.max(0, Math.min(n - 2, lo - 1));
+  const l0 = Math.log(nodes[i]), l1 = Math.log(nodes[i + 1]);
+  return [i, (la - l0) / (l1 - l0)];
+}
+const aIndex = a => nodeIndex(AG, a, false);
+
+// Silicate or graphite: extinction and scattering per H (cm^2) by material and size bin,
+// on the fine grid, and the mass per H
 function distOptics(mat, p) {
-  const { a, w } = powerlawWeights(mat, p.q, p.amin, p.amax, p.abund);
-  const ext = new Float64Array(NL), sca = new Float64Array(NL), T = QT[mat];
-  const extB = SIZE_BINS.map(() => new Float64Array(NL)), scaB = SIZE_BINS.map(() => new Float64Array(NL));
+  const n = GC.n, { a, w } = powerlawWeights(mat, p.q, p.amin, p.amax, p.abund);
+  const ext = new Float64Array(n), sca = new Float64Array(n), T = QT[mat];
+  const extB = SIZE_BINS.map(() => new Float64Array(n)), scaB = SIZE_BINS.map(() => new Float64Array(n));
   let mass = 0;
   for (let k = 0; k < a.length; k++) {
     const [i, t] = aIndex(a[k]);
     const geo = w[k] * Math.PI * Math.pow(a[k] * UM, 2);
-    const b = SIZE_BINS.findIndex(r => a[k] >= r[0] && a[k] < r[1]);
-    const eb = extB[b], sb = scaB[b];
-    for (let j = 0; j < NL; j++) {
-      const qa = (1 - t) * T[i * NL + j] + t * T[(i + 1) * NL + j];
-      const qs = (1 - t) * T[(NA + i) * NL + j] + t * T[(NA + i + 1) * NL + j];
+    const eb = extB[binOf(a[k])], sb = scaB[binOf(a[k])];
+    for (let j = 0; j < n; j++) {
+      const qa = (1 - t) * T[i * n + j] + t * T[(i + 1) * n + j];
+      const qs = (1 - t) * T[(NA + i) * n + j] + t * T[(NA + i + 1) * n + j];
       ext[j] += geo * (qa + qs); sca[j] += geo * qs;
       eb[j] += geo * (qa + qs); sb[j] += geo * qs;
     }
     mass += w[k] * grainMass(mat, a[k]);
   }
-  return { ext, sca, mass, a, w, extB, scaB };
+  return { ext: toFine(ext), sca: toFine(sca), mass, extB: extB.map(toFine), scaB: scaB.map(toFine) };
 }
 Phys.distOptics = distOptics;
 
@@ -559,69 +776,110 @@ function nodeRange(amin, amax) {
 }
 Phys.nodeRange = nodeRange;
 
-// emission of one grain at node i of the size grid, from the table optics, with a
-// summary of its temperatures: T_eq, the 5/50/95th percentiles of P(T), and the
-// temperature after absorbing one photon of the mean absorbed energy from T_eq
-function nodeEmission(mat, i, U) {
-  const g = new Grain(mat, AG[i], U, tableOptics(mat, i));
+// Emission of one grain at a node with a summary of its temperatures: T_eq, the 5/50/95th
+// percentiles of P(T), and the temperature after absorbing one photon of the mean energy.
+// mat "sil"/"gra" use the size grid and table optics; "pah" uses the PAH nodes and a charge.
+function nodeEmission(mat, i, U, charge) {
+  const g = mat === "pah" ? new Grain("pah", PAG[i], U, pahNodeOptics(i, charge), charge)
+                          : new Grain(mat, AG[i], U, tableOptics(mat, i));
   const r = g.emission();
   const ps = g.photonStats();
   const out = { em: r.em, pabs: g.Pabs, stochastic: r.stochastic, Teq: g.Teq,
-                Tjump: g.H.T(g.H.E(g.Teq) + ps[1] / ps[0]) };
-  [out.t05, out.t50, out.t95] = percentiles(r.T, r.P, [0.05, 0.5, 0.95]);
+                Tjump: g.H.T(g.H.E(g.Teq) + ps[1] / ps[0]), ground: r.ground || 0 };
+  [out.w05, out.w95] = powerPercentiles(r, [0.05, 0.95]);
   return out;
 }
 Phys.nodeEmission = nodeEmission;
 
-// percentiles of a distribution over levels T (interpolated in ln T within a level)
-function percentiles(T, P, qs) {
-  if (T.length === 1) return qs.map(() => T[0]);
-  const out = [];
-  let c = 0, j = 0;
-  for (const q of qs) {
-    while (j < T.length - 1 && c + P[j] < q) { c += P[j]; j++; }
-    const f = P[j] > 0 ? Math.min(1, Math.max(0, (q - c) / P[j])) : 0;
-    const lo = j > 0 ? Math.sqrt(T[j - 1] * T[j]) : T[0];
-    const hi = j < T.length - 1 ? Math.sqrt(T[j] * T[j + 1]) : T[j];
-    out.push(lo * Math.pow(hi / lo, f));
-  }
-  return out;
-}
-Phys.percentiles = percentiles;
-
-// dn/da = A a^-q (a in um, per um per H) for the normalization of powerlawWeights
-function powerlawA(mat, q, amin, amax, abund) {
-  const { a, w } = powerlawWeights(mat, q, amin, amax, abund);
-  const dl = Math.log(a[1] / a[0]);
-  return w[1] / (Math.pow(a[1], 1 - q) * dl);
-}
-Phys.powerlawA = powerlawA;
-
-// Emission per H for one material, given the per-node emission (array indexed by node)
+// Silicate or graphite: emission per H on the fine grid, from the per-node emission
 function distEmission(mat, p, nodes) {
-  const { a, w } = powerlawWeights(mat, p.q, p.amin, p.amax, p.abund);
-  const em = new Float64Array(NL);
-  const bins = SIZE_BINS.map(() => new Float64Array(NL));
+  const n = GC.n, { a, w } = powerlawWeights(mat, p.q, p.amin, p.amax, p.abund);
+  const em = new Float64Array(n);
+  const bins = SIZE_BINS.map(() => new Float64Array(n));
   let pabs = 0;
   for (let k = 0; k < a.length; k++) {
     const [i, t] = aIndex(a[k]);
     const n0 = nodes[i], n1 = nodes[i + 1];
     const s0 = (1 - t) / Math.pow(AG[i], 3), s1 = t / Math.pow(AG[i + 1], 3), a3 = Math.pow(a[k], 3);
-    const b = SIZE_BINS.findIndex(r => a[k] >= r[0] && a[k] < r[1]);
-    for (let j = 0; j < NL; j++) {
+    const bn = bins[binOf(a[k])];
+    for (let j = 0; j < n; j++) {
       const v = w[k] * a3 * (s0 * n0.em[j] + s1 * n1.em[j]);
-      em[j] += v; bins[b][j] += v;
+      em[j] += v; bn[j] += v;
     }
     pabs += w[k] * a3 * (s0 * n0.pabs + s1 * n1.pabs);
   }
-  for (let j = 0; j < NL; j++) {
-    const f = LAM[j] / (4 * Math.PI);
+  for (let j = 0; j < n; j++) {
+    const f = GC.lam[j] / (4 * Math.PI);
     em[j] *= f;
-    for (const bn of bins) bn[j] *= f;
+    for (const b of bins) b[j] *= f;
+  }
+  return { em: toFine(em), bins: bins.map(toFine), pabs };
+}
+Phys.distEmission = distEmission;
+
+// PAH optics at the PAH nodes (independent of U), cached
+const PNO = {};
+function pahNodeOptics(i, charge) {
+  const k = charge + i;
+  return PNO[k] || (PNO[k] = pahOptics(PAG[i], charge));
+}
+Phys.pahNodeOptics = pahNodeOptics;
+
+// PAH extinction and scattering per H on the fine grid, by size bin; p = {a0, sigma, abund, fion}
+function distOpticsPAH(p) {
+  const n = GF.n, { a, w } = lognormalWeights(p.a0, p.sigma, p.abund), f = p.fion;
+  const ext = new Float64Array(n), sca = new Float64Array(n);
+  const extB = SIZE_BINS.map(() => new Float64Array(n)), scaB = SIZE_BINS.map(() => new Float64Array(n));
+  let mass = 0;
+  for (let k = 0; k < a.length; k++) {
+    const [i, t] = nodeIndex(PAG, a[k], true);
+    const on = [pahNodeOptics(i, "neu"), pahNodeOptics(i, "ion"), pahNodeOptics(i + 1, "neu"), pahNodeOptics(i + 1, "ion")];
+    const g0 = Math.PI * Math.pow(PAG[i] * UM, 2), g1 = Math.PI * Math.pow(PAG[i + 1] * UM, 2);
+    const s0 = (1 - t) / Math.pow(PAG[i], 3), s1 = t / Math.pow(PAG[i + 1], 3), wa3 = w[k] * Math.pow(a[k], 3);
+    const eb = extB[binOf(a[k])], sb = scaB[binOf(a[k])];
+    for (let j = 0; j < n; j++) {
+      const ca = s0 * g0 * ((1 - f) * on[0].Qabs[j] + f * on[1].Qabs[j]) + s1 * g1 * ((1 - f) * on[2].Qabs[j] + f * on[3].Qabs[j]);
+      const cs = s0 * g0 * on[0].Qsca[j] + s1 * g1 * on[2].Qsca[j];
+      const e = wa3 * (ca + cs), s = wa3 * cs;
+      ext[j] += e; sca[j] += s; eb[j] += e; sb[j] += s;
+    }
+    mass += w[k] * Phys.pahMass(a[k]);
+  }
+  return { ext, sca, mass, extB, scaB };
+}
+Phys.distOpticsPAH = distOpticsPAH;
+
+// PAH emission per H on the fine grid; nodes = {neu: [...], ion: [...]} indexed by PAH node
+function distEmissionPAH(p, nodes) {
+  const n = GF.n, { a, w } = lognormalWeights(p.a0, p.sigma, p.abund), f = p.fion;
+  const em = new Float64Array(n), bins = SIZE_BINS.map(() => new Float64Array(n));
+  let pabs = 0;
+  for (let k = 0; k < a.length; k++) {
+    const [i, t] = nodeIndex(PAG, a[k], true);
+    const s0 = (1 - t) / Math.pow(PAG[i], 3), s1 = t / Math.pow(PAG[i + 1], 3), wa3 = w[k] * Math.pow(a[k], 3);
+    const n0 = nodes.neu[i], i0 = nodes.ion[i], n1 = nodes.neu[i + 1], i1 = nodes.ion[i + 1];
+    const bn = bins[binOf(a[k])];
+    for (let j = 0; j < n; j++) {
+      const v = wa3 * (s0 * ((1 - f) * n0.em[j] + f * i0.em[j]) + s1 * ((1 - f) * n1.em[j] + f * i1.em[j]));
+      em[j] += v; bn[j] += v;
+    }
+    pabs += wa3 * (s0 * ((1 - f) * n0.pabs + f * i0.pabs) + s1 * ((1 - f) * n1.pabs + f * i1.pabs));
+  }
+  for (let j = 0; j < n; j++) {
+    const fl = GF.lam[j] / (4 * Math.PI);
+    em[j] *= fl;
+    for (const b of bins) b[j] *= fl;
   }
   return { em, bins, pabs };
 }
-Phys.distEmission = distEmission;
+Phys.distEmissionPAH = distEmissionPAH;
+
+// PAH nodes needed for a log-normal: the bracket of [PAH_AMIN, pahAmax]
+function pahNodeRange(a0, sigma) {
+  const [i1] = nodeIndex(PAG, pahAmax(a0, sigma), true);
+  return [0, Math.min(PAG.length - 1, i1 + 1)];
+}
+Phys.pahNodeRange = pahNodeRange;
 
 // ------------------------------------------------------------------ reference extinction curve
 // Cardelli, Clayton & Mathis (1989), Eqs. (1)-(5): A_lambda / A_V = a(x) + b(x)/R_V for

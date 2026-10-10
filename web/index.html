@@ -35,11 +35,15 @@
 
     <section class="only-grain">
       <h2>Grain</h2>
-      <div class="caserow" title="Astronomical silicate (MgFeSiO4, 3.5 g/cm3) or graphite (2.24 g/cm3), with the dielectric functions of Draine (2003). Graphite is a conductor and absorbs more strongly in the far infrared; its small grains carry the 2175 A resonance.">
+      <div class="caserow" title="Astronomical silicate (MgFeSiO4, 3.5 g/cm3) or graphite (2.24 g/cm3), with the dielectric functions of Draine (2003), or polycyclic aromatic hydrocarbons with the cross sections of Draine &amp; Li (2007). Graphite is a conductor and absorbs more strongly in the far infrared; its small grains carry the 2175 A resonance. PAHs are large molecules with vibrational bands at 3.3-17 um, blending into graphite above 50 A.">
         <span>Material</span>
-        <span class="seg"><button id="mSil" type="button">Silicate</button><button id="mGra" type="button">Graphite</button></span>
+        <span class="seg"><button id="mSil" type="button">Silicate</button><button id="mGra" type="button">Graphite</button><button id="mPah" type="button">PAH</button></span>
       </div>
-      <div class="ctl" title="Grain radius. Below about 0.005 um real carbonaceous grains behave as large molecules (PAHs), which this page leaves out; bulk optical constants are used for every size.">
+      <div class="caserow" id="chRow" hidden title="Charge state of the PAH. Cations absorb more in the visible and near infrared, and their C-C stretching bands (6-9 um) are an order of magnitude stronger than in neutrals, while the C-H stretch at 3.3 um is weaker.">
+        <span>Charge</span>
+        <span class="seg"><button id="chNeu" type="button">Neutral</button><button id="chIon" type="button">Ionized</button></span>
+      </div>
+      <div class="ctl" title="Grain radius. Silicate and graphite use bulk optical constants from 0.003 to 3 um. PAHs run from 3.55 A (20 C atoms, the smallest stable PAH) to 0.03 um, becoming graphite-like above 50 A.">
         <label for="sA"><span>Radius, <i>a</i></span><span class="val" id="vA"></span></label>
         <input type="range" id="sA" min="-2.523" max="0.477" step="0.005">
       </div>
@@ -47,10 +51,11 @@
     </section>
 
     <section class="only-dist">
-      <div class="gh"><h2 title="Each material follows dn/da proportional to a^-q between a_min and a_max, normalized by the number of Si (silicate) or C (graphite) atoms per million H nuclei locked into grains.">Size distribution</h2>
-        <button id="mrn" class="ghost" type="button" title="Mathis, Rumpl &amp; Nordsieck (1977): q = 3.5 from 0.005 to 0.25 um for both materials, normalized as in Draine &amp; Lee (1984), which places 34 ppm of Si and 298 ppm of C in grains.">MRN</button></div>
+      <div class="gh"><h2 title="Silicate and graphite follow dn/da proportional to a^-q between a_min and a_max, PAHs a log-normal in radius, each normalized by the number of Si or C atoms per million H nuclei locked into it.">Size distribution</h2>
+        <span class="btns"><button id="mrn" class="ghost" type="button" title="Mathis, Rumpl &amp; Nordsieck (1977): q = 3.5 from 0.005 to 0.25 um for both materials, normalized as in Draine &amp; Lee (1984), which places 34 ppm of Si and 298 ppm of C in grains. No PAHs.">MRN</button><button id="mrnp" class="ghost" type="button" title="MRN with 45 ppm of C moved from graphite into PAHs: a log-normal centered at 4 A with width 0.4, the smaller of the two components of Draine &amp; Li (2007), half of them ionized.">MRN + PAHs</button></span></div>
       <div class="mat" id="dSil"></div>
       <div class="mat" id="dGra"></div>
+      <div class="mat" id="dPah"></div>
     </section>
 
     <section class="only-dist">
@@ -119,7 +124,7 @@
 </main>
 
 <footer>
-  <p>Spherical grains of astronomical silicate and graphite with the dielectric functions of Draine (2003), optics from Mie theory (graphite in the 1/3–2/3 approximation), heated by the interstellar radiation field of Mathis, Mezger &amp; Panagia (1983) scaled by <i>U</i> plus the CMB. Temperatures follow from energy balance; grains whose temperature fluctuates by more than 1% are treated stochastically with the heat capacities and thermal-continuous method of Draine &amp; Li (2001). PAHs, grain shapes, ices, charging, and sublimation are left out.</p>
+  <p>Spherical grains of astronomical silicate and graphite with the dielectric functions of Draine (2003), optics from Mie theory (graphite in the 1/3–2/3 approximation), and PAHs with the cross sections of Draine &amp; Li (2007), heated by the interstellar radiation field of Mathis, Mezger &amp; Panagia (1983) scaled by <i>U</i> plus the CMB. Temperatures follow from energy balance; grains whose temperature fluctuates by more than 1% are treated stochastically with the heat capacities and thermal-continuous method of Draine &amp; Li (2001). Grain shapes, ices, grain charging (the PAH ionized fraction is set by hand), and sublimation are left out.</p>
   <p class="src">Hover over a panel title, a control or a readout for what it shows.</p>
 </footer>
 

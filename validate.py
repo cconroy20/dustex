@@ -39,8 +39,10 @@ def readQ(path):
     return out
 
 
-def bands_of(em, edges=((3, 8), (8, 20), (20, 50), (50, 150), (150, 1000))):
-    return np.array([np.sum((D.WLN * D.LAM * em)[(D.LAM >= a) & (D.LAM < b)]) for a, b in edges])
+def bands_of(em, edges=((3, 8), (8, 20), (20, 50), (50, 150), (150, 1000)), grid=None):
+    if grid is None:
+        grid = D.FINE if len(em) == D.FINE.n else D.COARSE
+    return np.array([np.sum((grid.wln * grid.lam * em)[(grid.lam >= a) & (grid.lam < b)]) for a, b in edges])
 
 
 # ------------------------------------------------------------------ Mie theory
@@ -142,6 +144,15 @@ for mat in ("sil", "gra"):
             T, P, info = g.stochastic()
             worst = max(worst, abs(info["Pemit"] / g.Pabs - 1))
 check("stochastic steady state conserves energy (12 grains)", worst < 1e-3, "worst %.1e" % worst)
+# ground-state probability P_0 of small silicate grains, LD01 Fig. 5 labels (U = 1): 5 A 0.999,
+# 10 A 0.994, 25 A 0.234
+p0 = {}
+for a, ref in ((5e-4, 0.999), (1e-3, 0.994), (2.5e-3, 0.234)):
+    g = D.Grain("sil", a, 1.0)
+    p0[a] = (g.stochastic()[2]["ground"], ref)
+check("ground-state probability of 5 and 10 A silicate grains vs LD01 Fig. 5", all(abs(p0[a][0] - p0[a][1]) < 0.01 for a in (5e-4, 1e-3)),
+      " ".join("%.0fA:%.3f(%.3f)" % (a * 1e4, *p0[a]) for a in p0))
+print("INFO  at 25 A the thermal-continuous approximation gives P_0 = %.2f against LD01's exact 0.23" % p0[2.5e-3][0])
 # LD01 Fig. 5: silicate, chi_MMP = 1; peak of dP/dlnE and its position E/hc (cm^-1)
 fig5 = {0.005: (0.397, 767), 0.0075: (0.483, 6940), 0.010: (0.594, 2.80e4), 0.015: (1.154, 1.50e5),
         0.020: (1.863, 3.72e5), 0.025: (2.61, 7.20e5), 0.030: (3.354, 1.22e6)}
@@ -184,12 +195,86 @@ for mat, a, U in [("sil", 0.08, 1.0), ("gra", 0.07, 1.0), ("sil", 0.03, 100.0), 
     worst = max(worst, np.max(abs(e2 / e1 - 1)[f > 1e-3]))
 check("equilibrium within 1% of stochastic near the switch (sigma_T/T ~ 0.01)", worst < 0.01, "worst %.4f" % worst)
 
+# ------------------------------------------------------------------ PAHs
+def readP(path):
+    """Draine's PAH tables (fixed-width; negative numbers run into their neighbors)."""
+    import re
+    L = gzip.open(path, "rt").read().splitlines()
+    out, i = {}, 0
+    while i < len(L):
+        if "radius(micron)" in L[i]:
+            a = float(L[i].split()[0]); rows = []; j = i + 2
+            while j < len(L) and L[j].strip() and "radius" not in L[j]:
+                rows.append([float(x) for x in re.findall(r"-?\d\.\d+E[+-]\d\d", L[j])[:5]]); j += 1
+            out[a] = np.array(rows)[::-1]; i = j
+        else:
+            i += 1
+    return out
+# (1) the shared machinery (LD01 Eqs. 5-11, Drude profiles, cutoff, graphite blend) with LD01's
+# own band parameters against Draine's tabulated LD01 cross sections.  The tables carry broader
+# 11.3 and 12.7 um bands than LD01 Table 1, so 10-13.5 um is compared as a band integral.
+worst, worst_int = 0, 0
+for ch, fn in [("neu", "PAHneu_30.gz"), ("ion", "PAHion_30.gz")]:
+    T = readP(os.path.join(D.RAW, "draine", fn))
+    for a in (3.548e-4, 5.012e-4, 1e-3, 1.995e-3, 5.012e-3):
+        k = min(T, key=lambda r: abs(np.log(r / a)))
+        w, qe, qa, qs, g = T[k].T
+        NC = D.nc_pah(k, "LD01")
+        ca = np.interp(np.log(w), np.log(D.LAMF), D.graphite_on_fine(k)[0])
+        q = ((1 - D.xi_gra(k)) * NC * D.pah_cabs_per_c(w, NC, ch, "LD01") + D.xi_gra(k) * ca) / (np.pi * (k * D.UM) ** 2)
+        for lo, hi in [(0.1, 0.3), (0.3, 1), (1, 3), (3, 3.6), (5.5, 9), (15, 25)]:
+            s = (w >= lo) & (w < hi)
+            worst = max(worst, abs(np.median(q[s] / qa[s]) - 1))
+        s = (w > 10.3) & (w < 13.6)
+        worst_int = max(worst_int, abs(np.trapz(q[s], 1 / w[s]) / np.trapz(qa[s], 1 / w[s]) - 1))
+check("PAH cross sections, LD01 parameters vs Draine's PAH tables (10 cases)", worst < 0.06, "worst median %.3f" % worst)
+check("  ... 10.3-13.6 um band integral", worst_int < 0.10, "worst %.3f" % worst_int)
+# (2) DL07 parameters vs DL07 Fig. 3a (C64H20, digitized): band peaks and continuum
+fig3 = {(3.29, "peak"): (1.67e-20, 4.30e-21), (6.22, "peak"): (3.75e-21, 2.89e-20), (7.60, "peak"): (3.44e-21, 2.92e-20),
+        (8.61, "peak"): (1.64e-21, 1.11e-20), (11.27, "peak"): (6.00e-21, 5.57e-21), (12.62, "peak"): (2.57e-21, 2.58e-21),
+        (4.5, "cont"): (2.43e-22, 5.72e-22), (10.0, "cont"): (4.91e-22, 1.16e-21)}
+NC = 64.0
+cg = D.graphite_on_fine(1e-3 * (NC / 460) ** (1 / 3))[0] / NC
+rat = []
+for (lam, kind), refs in fig3.items():
+    for ch, ref in zip(("neu", "ion"), refs):
+        c = np.maximum(0.99 * D.pah_cabs_per_c(D.LAMF, NC, ch) + 0.01 * cg, 0)
+        s = (D.LAMF > lam * 0.985) & (D.LAMF < lam * 1.015)
+        rat.append((c[s].max() if kind == "peak" else np.interp(lam, D.LAMF, c)) / ref)
+check("PAH cross sections, DL07 parameters vs DL07 Fig. 3a (16 points, see README)", max(abs(np.array(rat) - 1)) < 0.25,
+      "ratios %.2f-%.2f" % (min(rat), max(rat)))
+check("cation cross section floored at zero near 1.9 um", all(D.pah_optics(a, "ion")[0].min() >= 0 for a in (4e-4, 1e-3, 3e-3)))
+# (3) band emission fractions lambda p_lambda / p of single PAHs vs DL07 Fig. 6 (205 digitized points)
+f6 = json.load(open(os.path.join(HERE, "data", "dl07_fig6.json")))["points"]
+cache6, ratios = {}, {}
+for key, ref in f6.items():
+    ch, aA, lam = key.split("|")
+    if (ch, aA) not in cache6:
+        g = D.Grain("pah", float(aA) * 1e-4, 1.0, charge=ch)
+        em = g.emission()[0]
+        cache6[(ch, aA)] = (em, g.G.integ(em))
+    em, p = cache6[(ch, aA)]
+    ratios.setdefault(lam, []).append(np.interp(float(lam), D.LAMF, D.LAMF * em) / p / ref)
+meds = {lam: np.median(r) for lam, r in ratios.items()}
+allr = np.concatenate([np.array(r) for r in ratios.values()])
+check("PAH band emission fractions vs DL07 Fig. 6: median per band within 0.8-1.25",
+      all(0.8 < m < 1.25 for m in meds.values()), " ".join("%s:%.2f" % (l, m) for l, m in sorted(meds.items(), key=lambda t: float(t[0]))))
+check("  ... and over all %d points within 10%%" % len(allr), abs(np.median(allr) - 1) < 0.10, "median %.3f" % np.median(allr))
+worst = 0
+for ch in ("neu", "ion"):
+    for a in (3.55e-4, 7e-4, 2e-3, 1e-2):
+        for U in (1.0, 1e3):
+            g = D.Grain("pah", a, U, charge=ch)
+            em = g.emission()[0]
+            worst = max(worst, abs(g.G.integ(em) / g.Pabs - 1))
+check("PAH grains conserve energy (16 cases, U = 1 and 1e3)", worst < 1e-3, "worst %.1e" % worst)
+
 # ------------------------------------------------------------------ size distributions
 d = np.load(os.path.join(HERE, "cache", "optics.npz"))
 tabs32 = {m: d[m].astype("f4").astype("f8") for m in ("sil", "gra")}
 mrn = {m: dict(q=3.5, amin=0.005, amax=0.25, abund=D.mrn_abundance(m)) for m in ("sil", "gra")}
 r = D.distribution(mrn, 1.0, tabs32)
-pem = 4 * np.pi * np.sum(D.WLN * sum(r["em"].values()))
+pem = 4 * np.pi * np.sum(D.FINE.wln * sum(r["em"].values()))
 pab = sum(r["pabs"].values())
 check("size distribution: emitted = absorbed power per H (MRN, U = 1)", abs(pem / pab - 1) < 1e-3, "%.5f" % (pem / pab))
 check("MRN (DL84 normalization) locks up 34 ppm Si and 298 ppm C",
@@ -198,6 +283,14 @@ ext_tot = sum(r["ext"].values())
 check("extinction and scattering split by size sum to the totals",
       np.max(abs(sum(r["ext_size"]) / ext_tot - 1)) < 1e-12 and np.max(abs(sum(r["sca_size"]) / sum(r["sca"].values()) - 1)) < 1e-12)
 bins = sum(bands_of(e) for e in r["em_size"]).sum()
+mrnp = dict(mrn)
+mrnp["gra"] = dict(mrn["gra"], abund=D.mrn_abundance("gra") - 45)
+mrnp["pah"] = dict(a0=4e-4, sigma=0.4, abund=45.0, fion=0.5)
+rp = D.distribution(mrnp, 1.0, tabs32)
+pem = 4 * np.pi * np.sum(D.FINE.wln * sum(rp["em"].values()))
+check("with PAHs: emitted = absorbed power per H (MRN + PAHs, U = 1)", abs(pem / sum(rp["pabs"].values()) - 1) < 1e-3,
+      "%.5f" % (pem / sum(rp["pabs"].values())))
+print("INFO  MRN + PAHs preset: q_PAH = %.3f of the dust mass (DL07 MW3.1_60: 0.046)" % (rp["mass"]["pah"] / sum(rp["mass"].values())))
 check("emission split by size sums to the total", abs(bins / bands_of(sum(r["em"].values())).sum() - 1) < 1e-9)
 
 # ------------------------------------------------------------------ reference extinction curve
@@ -233,7 +326,11 @@ for mat, a, U in [("sil", 0.003, 1.0), ("gra", 0.01, 1.0), ("sil", 0.05, 1.0), (
                   ("sil", 0.02, 1000.0), ("gra", 0.004, 0.1)]:
     cases.append(dict(kind="grain", mat=mat, a=a, U=U))
 cases.append(dict(kind="grain", mat="sil", a=float(D.A_GRID[40]), U=3.0, table=40))
-dist = {"sil": dict(q=3.3, amin=0.004, amax=0.3, abund=30.0), "gra": dict(q=3.6, amin=0.006, amax=0.2, abund=200.0)}
+for a, ch, U in [(3.55e-4, "neu", 1.0), (6e-4, "ion", 1.0), (2.5e-3, "ion", 100.0), (0.012, "neu", 1.0)]:
+    cases.append(dict(kind="grain", mat="pah", a=a, U=U, charge=ch))
+    cases.append(dict(kind="pahopt", a=a, charge=ch))
+dist = {"sil": dict(q=3.3, amin=0.004, amax=0.3, abund=30.0), "gra": dict(q=3.6, amin=0.006, amax=0.2, abund=200.0),
+        "pah": dict(a0=5e-4, sigma=0.45, abund=40.0, fion=0.3)}
 cases.append(dict(kind="dist", U=2.0, params=dist))
 xccm = list(np.linspace(0.2, 10.5, 300))
 cases.append(dict(kind="ccm", x=xccm, Rv=3.1))
@@ -248,13 +345,13 @@ except (OSError, subprocess.CalledProcessError) as e:
 if js is not None:
     w_opt = w_g = w_d = w_ccm = 0
     for c, j in zip(cases, js):
-        if c["kind"] == "optics":
-            Qa, Qs, G = D.optics(c["mat"], c["a"])
-            w_opt = max(w_opt, np.max(abs(np.array(j["Qabs"]) / Qa - 1)), np.max(abs(np.array(j["Qsca"]) / Qs - 1)),
-                        np.max(abs(np.array(j["g"]) - G)))
+        if c["kind"] in ("optics", "pahopt"):
+            Qa, Qs, G = D.optics(c["mat"], c["a"]) if c["kind"] == "optics" else D.pah_optics(c["a"], c["charge"])
+            rel = lambda x, y: np.max(abs(np.array(x) - y) / np.maximum(abs(y), 1e-12 * abs(y).max()))
+            w_opt = max(w_opt, rel(j["Qabs"], Qa), rel(j["Qsca"], Qs), np.max(abs(np.array(j["g"]) - G)))
         elif c["kind"] == "grain":
             opt = tuple(tabs32[c["mat"]][:, c["table"]]) if "table" in c else None
-            g = D.Grain(c["mat"], c["a"], c["U"], opt=opt)
+            g = D.Grain(c["mat"], c["a"], c["U"], opt=opt, charge=c.get("charge", "neu"))
             em = g.emission()[0]
             b1, b2 = bands_of(em), bands_of(np.array(j["em"]))
             f = b1 / b1.sum()
@@ -276,8 +373,8 @@ if js is not None:
                     w_d = max(w_d, np.max(abs(np.array(j["extB"][k]) / rp["ext_size"][k] - 1)),
                               np.max(abs(np.array(j["scaB"][k]) / rp["sca_size"][k] - 1)))
     check("port: CCM89 curve, including where it is undefined", w_ccm < 1e-12, "worst %.1e" % w_ccm)
-    check("port: Mie optics (2 materials x 2 radii, all wavelengths)", w_opt < 1e-9, "worst %.1e" % w_opt)
-    check("port: single grains (T_eq, P_abs, band emission; 7 cases)", w_g < 1e-4, "worst %.1e" % w_g)
+    check("port: Mie and PAH optics (4 + 4 cases, all wavelengths)", w_opt < 1e-9, "worst %.1e" % w_opt)
+    check("port: single grains incl. PAHs (T_eq, P_abs, band emission; 11 cases)", w_g < 1e-4, "worst %.1e" % w_g)
     check("port: size distribution (extinction and scattering by material and size, mass, emission)", w_d < 1e-4, "worst %.1e" % w_d)
 
 n = sum(ok for _, ok in results)

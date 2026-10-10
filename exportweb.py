@@ -6,6 +6,8 @@ web/data/dust.bin (the arrays).
   m_sil          astronomical silicate refractive index on lam (re, im interleaved), float64
   eps_{pa,pe}{0.01,0.10}  graphite dielectric functions on lam (re, im interleaved), float64
   q_{sil,gra}    Q_abs then Q_sca on (A_GRID, lam), float32
+  lamf, ustarf   the fine wavelength grid (PAHs and distribution sums) and the field on it
+  pah_grid       PAH size nodes (um)
   tgrid_e        temperature grid for the enthalpy tables (K), float64
   e_{sil,gra}    E(T) / (N - 2) on tgrid_e (erg), float64
 
@@ -52,6 +54,9 @@ def main():
         ("eps_pe0.10", cplx(E["pe0.10"]), "f8"),
         ("q_sil", tabs["sil"][:2].astype("f4"), "f4"),
         ("q_gra", tabs["gra"][:2].astype("f4"), "f4"),
+        ("lamf", D.LAMF, "f8"),
+        ("ustarf", D.u_star(D.LAMF), "f8"),
+        ("pah_grid", D.PAH_GRID, "f8"),
         ("tgrid_e", D.TGRID_E, "f8"),
         ("e_sil", D.enthalpy_table("sil"), "f8"),
         ("e_gra", D.enthalpy_table("gra"), "f8"),

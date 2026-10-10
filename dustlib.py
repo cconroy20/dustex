@@ -80,6 +80,42 @@ def integ_lam(F):
     return np.sum(WLN * LAM * F, axis=-1)
 
 
+class Grid:
+    """A wavelength grid (um, ascending, not necessarily uniform) with trapezoid weights in
+    ln(lambda): int F dlambda = sum(wln * lam * F)."""
+
+    def __init__(self, lam):
+        self.lam = np.asarray(lam, float)
+        self.n = len(self.lam)
+        d = np.diff(np.log(self.lam))
+        self.wln = np.zeros(self.n)
+        self.wln[:-1] += 0.5 * d
+        self.wln[1:] += 0.5 * d
+        self.eph = H * C / (self.lam * UM)
+
+    def integ(self, F):
+        return np.sum(self.wln * self.lam * F, axis=-1)
+
+
+def _fine_lambda():
+    """The PAH grid: 80 per decade below 1 um and above 20 um, 200 per decade over 1-3 um
+    for the near-infrared bands of PAH cations, 500 per decade over 3-20 um, where the
+    narrowest bands have FWHM ~1.2% (trapezoid error on their integrals < 1e-3)."""
+    seg = lambda lo, hi, n: 10 ** np.arange(np.log10(lo), np.log10(hi) - 1e-12, 1.0 / n)
+    return np.concatenate([seg(LYMAN_UM, 1.0, 80), seg(1.0, 3.0, 200), seg(3.0, 20.0, 500),
+                           seg(20.0, 1e4, 80), [1e4]])
+
+
+COARSE = Grid(LAM)              # silicate and graphite
+FINE = Grid(_fine_lambda())     # PAHs, and the distribution sums
+LAMF = FINE.lam
+
+
+def to_fine(arr):
+    """Coarse-grid array onto the fine grid, linear in ln(lambda)."""
+    return np.interp(np.log(LAMF), np.log(LAM), arr)
+
+
 # ------------------------------------------------------------------ materials
 MAT = {
     "sil": dict(name="astronomical silicate", rho=3.5,
@@ -290,11 +326,35 @@ def heatcap_per_atom(mat, T, dT=1e-4):
     return (e_per_mode_set(mat, T * (1 + dT)) - e_per_mode_set(mat, T * (1 - dT))) / (2 * dT * T) / KB
 
 
+def e_first_mode(mat, N):
+    """Energy of the lowest vibrational mode (erg), from the model mode spectra of DL01:
+    hbar omega_1 = k Theta [(1 - beta)(1 - delta_1)/N_m + beta]^(1/n), delta_1 = 1/2.
+    Carbon (PAH, graphite): out-of-plane C-C modes, n = 2, Theta = 863 K, N_m = N_C - 2, beta
+    from DL01 Eq. (beta_graph).  Silicate: the lower of the n = 2 (Theta = 500 K, N_m = 2(N - 2))
+    and n = 3 (Theta = 1500 K, N_m = N - 2) sets, beta from Eq. (beta_sil).  Below this energy a
+    grain is in its vibrational ground state."""
+    if mat == "sil":
+        out = []
+        for n, th, Nm in ((2, 500.0, 2 * (N - 2)), (3, 1500.0, N - 2)):
+            beta = (Nm ** (1 - n / 3) - 1) / (2 * Nm - 1)
+            out.append(KB * th * ((1 - beta) * 0.5 / Nm + beta) ** (1.0 / n))
+        return min(out)
+    NC, Nm = N, N - 2
+    if NC <= 54:
+        beta = 0.0
+    elif NC <= 102:
+        beta = (NC - 54) / 52 / (2 * Nm - 1)
+    else:
+        beta = ((NC - 2) / 52 * (102 / NC) ** (2 / 3) - 1) / (2 * Nm - 1)
+    return KB * 863.0 * ((1 - beta) * 0.5 / Nm + beta) ** 0.5
+
+
 class Enthalpy:
     """E(T) and T(E) for one grain, log-log interpolated on TGRID_E."""
 
     def __init__(self, mat, a_um):
         self.N = n_atoms(mat, a_um)
+        self.E1 = e_first_mode(mat, self.N)
         self.lT = np.log(TGRID_E)
         self.lE = np.log((self.N - 2) * e_per_mode_set(mat, TGRID_E))
 
@@ -316,24 +376,31 @@ class Grain:
     M = 400               # enthalpy bins, first pass and minimum for the second
     K_COOL = 30.0         # cool for this many mean photon intervals to set the bottom bin
 
-    def __init__(self, mat, a_um, U, opt=None):
-        self.mat, self.a, self.U = mat, a_um, U
-        self.Qabs, self.Qsca, self.g = optics(mat, a_um) if opt is None else opt
+    def __init__(self, mat, a_um, U, opt=None, charge="neu"):
+        self.mat, self.a, self.U, self.charge = mat, a_um, U, charge
+        self.G = FINE if mat == "pah" else COARSE
+        if opt is None:
+            opt = pah_optics(a_um, charge) if mat == "pah" else optics(mat, a_um)
+        self.Qabs, self.Qsca, self.g = opt
         self.Cabs = np.pi * (a_um * UM) ** 2 * self.Qabs
-        self.mass = grain_mass(mat, a_um)
-        self.H = Enthalpy(mat, a_um)
-        self.u = u_field(U)
-        self.us = U * u_star()
+        if mat == "pah":
+            self.H = PAHEnthalpy(a_um)
+            self.mass = self.H.mass
+        else:
+            self.H = Enthalpy(mat, a_um)
+            self.mass = grain_mass(mat, a_um)
+        self.u = u_field(U, self.G.lam)
+        self.us = U * u_star(self.G.lam)
         self.pabs_lam = C * self.Cabs * self.u          # absorbed power per um
-        self.Pabs = integ_lam(self.pabs_lam)
+        self.Pabs = self.G.integ(self.pabs_lam)
         self.Teq = self.equilibrium_T()
 
     # emitted power at T, all wavelengths, or only photons below Emax (erg)
     def L(self, T, Emax=None):
-        F = 4 * np.pi * self.Cabs * B_lam(LAM, T)
+        F = 4 * np.pi * self.Cabs * B_lam(self.G.lam, T)
         if Emax is not None:
-            F = np.where(H * C / (LAM * UM) < Emax, F, 0.0)
-        return integ_lam(F)
+            F = np.where(self.G.eph < Emax, F, 0.0)
+        return self.G.integ(F)
 
     def equilibrium_T(self):
         lo, hi = np.log(1.0), np.log(5000.0)
@@ -347,11 +414,11 @@ class Grain:
 
     # photon statistics of the starlight alone
     def photon_stats(self):
-        Eph = H * C / (LAM * UM)
+        Eph = self.G.eph
         p = C * self.Cabs * self.us
-        R = integ_lam(p / Eph)
-        S1 = integ_lam(p)
-        S2 = integ_lam(p * Eph)
+        R = self.G.integ(p / Eph)
+        S1 = self.G.integ(p)
+        S2 = self.G.integ(p * Eph)
         return R, S1, S2
 
     def sigma_T(self):
@@ -369,12 +436,14 @@ class Grain:
     def _photon_cumulants(self):
         """Cumulative int f dE and int E f dE with f(E) = C_abs u_E, on the ascending photon
         energy grid; trapezoid in ln E."""
-        E = (H * C / (LAM * UM))[::-1]
-        f = (self.Cabs * self.u * LAM / (H * C / (LAM * UM)))[::-1]    # u_E = u_lambda * lambda / E
+        lam = self.G.lam
+        E = self.G.eph[::-1]
+        f = (self.Cabs * self.u * lam / self.G.eph)[::-1]    # u_E = u_lambda * lambda / E
         g0 = f * E
         g1 = f * E * E
-        I0 = np.concatenate([[0.0], np.cumsum(0.5 * (g0[1:] + g0[:-1]) * DLNLAM)])
-        I1 = np.concatenate([[0.0], np.cumsum(0.5 * (g1[1:] + g1[:-1]) * DLNLAM)])
+        dl = np.diff(np.log(E))
+        I0 = np.concatenate([[0.0], np.cumsum(0.5 * (g0[1:] + g0[:-1]) * dl)])
+        I1 = np.concatenate([[0.0], np.cumsum(0.5 * (g1[1:] + g1[:-1]) * dl)])
         return E, I0, I1
 
     def stochastic(self, M=None, Ehi_scale=1.0, verbose=False):
@@ -393,7 +462,11 @@ class Grain:
         tcum = np.concatenate([[0], np.cumsum(dt)])
         k = np.searchsorted(tcum, self.K_COOL / R)
         Tcool = Ts[min(k, len(Ts) - 1)]
-        Elo = max(Hh.E(T_CMB), min(Eeq - 10 * sE, Hh.E(Tcool)))
+        # never below the lowest vibrational mode (nor below two quanta of the longest
+        # wavelength on the grid, where no radiative transition is possible): energies under
+        # E1 belong to the vibrational ground state, which the bottom bin then stands for
+        Erad = 2 * self.G.eph.min()
+        Elo = max(Hh.E(T_CMB), Erad, Hh.E1, min(Eeq - 10 * sE, Hh.E(Tcool)))
         Ehi = Eeq + 13.6 * EV + 10 * sE
         Ehi = Elo + (Ehi - Elo) * Ehi_scale
         for it in range(8):
@@ -495,7 +568,7 @@ class Grain:
         # continuous cooling u -> u - 1
         down = np.array([self.L(T[u], Emax=E[u]) for u in range(M + 1)])
         Dn = np.zeros(M + 1)
-        Dn[1:] = down[1:] / (E[1:] - E[:-1])
+        Dn[1:] = np.maximum(down[1:], 1e-300) / (E[1:] - E[:-1])
         # Guhathakurta & Draine recursion
         B = np.cumsum(A[::-1], axis=0)[::-1]        # B[j, i] = sum_{u >= j} A[u, i]
         X = np.zeros(M + 1)
@@ -505,24 +578,156 @@ class Grain:
             if X[j] > 1e250:
                 X[:j + 1] *= 1e-250
         P = X / X.sum()
-        info = dict(E=E, down=down, Pemit=np.dot(P, down))
+        # the bottom bin has no downward transition: it is the ground state (or empty), so it
+        # radiates nothing, and the power balance is sum_{j>=1} P_j L_j
+        info = dict(E=E, down=down, Pemit=np.dot(P[1:], down[1:]), ground=P[0] if E[0] <= 1.0001 * self.H.E1 else 0.0)
         return T, P, info
 
     # ---------------------------------------------------------------- emission
     def emission(self, stochastic=True):
         """Emitted power per um per grain, the temperatures, P(T) and a flag."""
+        lam = self.G.lam
         sT, _ = self.sigma_T()
         if not stochastic or sT < self.SIGMA_EQ:
-            return 4 * np.pi * self.Cabs * B_lam(LAM, self.Teq), np.array([self.Teq]), np.array([1.0]), False
+            return 4 * np.pi * self.Cabs * B_lam(lam, self.Teq), np.array([self.Teq]), np.array([1.0]), False
         T, P, info = self.stochastic()
         E = info["E"]
-        Eph = H * C / (LAM * UM)
-        em = np.zeros(NLAM)
-        for Tj, Pj, Ej in zip(T, P, E):
-            if Pj < 1e-30:
+        em = np.zeros(self.G.n)
+        for j, (Tj, Pj, Ej) in enumerate(zip(T, P, E)):
+            if j == 0 or Pj < 1e-30:                 # the bottom bin radiates nothing
                 continue
-            em += Pj * np.where(Eph < Ej, B_lam(LAM, Tj), 0.0)
+            em += Pj * np.where(self.G.eph < Ej, B_lam(lam, Tj), 0.0)
         return 4 * np.pi * self.Cabs * em, T, P, True
+
+
+# ------------------------------------------------------------------ PAHs
+# Absorption per C atom: Li & Draine (2001, LD01) Eqs. (5)-(11) and their Drude profiles,
+# with the band parameters and changes of Draine & Li (2007, DL07, Sect. 2, Table 1),
+# including the near-infrared continuum and bands of PAH cations.  Each band is
+# (lambda_j [um], gamma_j, sigma_int neutral, sigma_int ionized [1e-20 cm/C], times H/C?).
+# ⚠ DL07 Table 1 row 29 (18.92 um) reads gamma = 0.10, sigma = 0.10 (neutral), 0.17
+# (ionized) in the arXiv source, after a commented-out older row; used as printed.
+PAH_UV = [(0.0722, 0.195, 7.97e7), (0.2175, 0.217, 1.23e7)]          # S_1, S_2
+PAH_BANDS = {
+    "DL07": [(1.050, 0.055, 0.0, 2.0e4, False), (1.260, 0.11, 0.0, 0.078, False),
+             (1.905, 0.09, 0.0, -146.5, False), (3.300, 0.012, 394.0, 89.4, True),
+             (5.270, 0.034, 2.5, 20.0, False), (5.700, 0.035, 4.0, 32.0, False),
+             (6.220, 0.030, 29.4, 235.0, False), (6.690, 0.070, 7.35, 59.0, False),
+             (7.417, 0.126, 20.8, 181.0, False), (7.598, 0.044, 18.1, 163.0, False),
+             (7.850, 0.053, 21.9, 197.0, False), (8.330, 0.052, 6.94, 48.0, True),
+             (8.610, 0.039, 27.8, 194.0, True), (10.68, 0.020, 0.3, 0.3, True),
+             (11.23, 0.012, 18.9, 17.7, True), (11.33, 0.032, 52.0, 49.0, True),
+             (11.99, 0.045, 24.2, 20.5, True), (12.62, 0.042, 35.0, 31.0, True),
+             (12.69, 0.013, 1.3, 1.3, True), (13.48, 0.040, 8.0, 8.0, True),
+             (14.19, 0.025, 0.45, 0.45, False), (15.90, 0.020, 0.04, 0.04, False),
+             (16.45, 0.014, 0.5, 0.5, False), (17.04, 0.065, 2.22, 2.22, False),
+             (17.375, 0.012, 0.11, 0.11, False), (17.87, 0.016, 0.067, 0.067, False),
+             (18.92, 0.10, 0.10, 0.17, False), (15.0, 0.8, 50.0, 50.0, False)],
+    # LD01 Table 1 with E_6.2 = 3, E_7.7 = E_8.6 = 2 (their diffuse-ISM values); used only
+    # to check this code against Draine's tabulated LD01 cross sections
+    "LD01": [(3.3, 0.012, 197.0, 44.7, True), (6.2, 0.032, 3 * 19.6, 3 * 157.0, False),
+             (7.7, 0.091, 2 * 60.9, 2 * 548.0, False), (8.6, 0.047, 2 * 34.7, 2 * 242.0, True),
+             (11.3, 0.018, 427.0 / 3, 400.0 / 3, True), (11.9, 0.025, 72.7 / 3, 61.4 / 3, True),
+             (12.7, 0.024, 167.0 / 3, 149.0 / 3, True), (16.4, 0.010, 5.52, 5.52, False),
+             (18.3, 0.036, 6.04, 6.04, False), (21.2, 0.038, 10.8, 10.8, False),
+             (23.1, 0.046, 2.78, 2.78, False), (26.0, 0.69, 15.2, 15.2, False)],
+}
+NC_PER_NM3 = {"DL07": 460.0, "LD01": 470.2}     # N_C = k (a / 1 nm)^3 (DL07 Eq. 2; LD01 note 2)
+PAH_AMIN = 3.55e-4                              # um; N_C = 20, the smallest PAH (DL07)
+HC_OVER_K = 1.4387769                           # cm K
+CH_MODES = [886.0, 1161.0, 3030.0]              # cm^-1, C-H bending/stretching (DL01)
+M_C, M_H = 12.011 * AMU, 1.008 * AMU
+
+
+def nc_pah(a_um, model="DL07"):
+    return NC_PER_NM3[model] * (a_um / 1e-3) ** 3
+
+
+def hc_ratio(NC):
+    """H/C for compact PAHs (LD01 Eq. 4, DL07 Eq. 3)."""
+    return np.where(NC <= 25, 0.5, np.where(NC <= 100, 0.5 * np.sqrt(25.0 / np.maximum(NC, 1)), 0.25))
+
+
+def drude(lam_um, lj, gj, sig):
+    """S_j per C atom (cm^2) for sigma_int in 1e-20 cm/C."""
+    return 2 / np.pi * gj * lj * UM * sig * 1e-20 / ((lam_um / lj - lj / lam_um) ** 2 + gj ** 2)
+
+
+def pah_cabs_per_c(lam_um, NC, charge, model="DL07"):
+    """C_abs / N_C (cm^2) of a PAH with N_C carbon atoms, neutral ("neu") or ionized ("ion")."""
+    lam = np.asarray(lam_um, float)
+    x = 1.0 / lam
+    ion = charge == "ion"
+    hc = float(hc_ratio(NC))
+    S1 = drude(lam, *PAH_UV[0])
+    S2 = drude(lam, *PAH_UV[1])
+    out = np.zeros_like(lam)
+    s = (x > 10) & (x < 15)
+    out[s] = S1[s] + (-3.0 + 1.35 * x[s]) * 1e-18
+    s = (x > 7.7) & (x <= 10)
+    out[s] = (66.302 - 24.367 * x[s] + 2.950 * x[s] ** 2 - 0.1057 * x[s] ** 3) * 1e-18
+    s = (x > 5.9) & (x <= 7.7)
+    out[s] = S2[s] + (1.8687 + 0.1905 * x[s] + 0.4175 * (x[s] - 5.9) ** 2 + 0.04370 * (x[s] - 5.9) ** 3) * 1e-18
+    s = (x > 3.3) & (x <= 5.9)
+    out[s] = S2[s] + (1.8687 + 0.1905 * x[s]) * 1e-18
+    s = x <= 3.3
+    M = (0.3 if NC < 40 else 0.4) * NC                  # fused benzenoid rings (LD01 App. A)
+    lc = 1.0 / (2.282 / np.sqrt(M) + 0.889) if ion else 1.0 / (3.804 / np.sqrt(M) + 1.052)
+    y = lc / lam[s]
+    cut = np.arctan(1e3 * (y - 1) ** 3 / y) / np.pi + 0.5
+    ir = 34.58e-18 * 10 ** (-3.431 / x[s]) * cut
+    for lj, gj, sn, si, byhc in PAH_BANDS[model]:
+        ir = ir + drude(lam[s], lj, gj, (si if ion else sn) * (hc if byhc else 1.0))
+    out[s] = ir
+    if ion and model == "DL07":                         # DL07 Eq. (1), Mattioda et al. (2005)
+        out = out + 3.5e-19 * 10 ** (-1.45 / x) * np.exp(-0.1 * x ** 2)
+    return out
+
+
+def xi_gra(a_um):
+    """Graphite weight in the PAH-graphite blend (DL07 Eqs. 4-5; LD01 Eq. 3)."""
+    return np.where(a_um <= 0.005, 0.01, 0.01 + 0.99 * (1 - (0.005 / a_um) ** 3))
+
+
+def graphite_on_fine(a_um):
+    """Graphite C_abs, C_sca (cm^2) and g on the fine grid for a sphere of radius a: Mie theory
+    on the coarse grid at max(a, 0.001 um), scaled to a in the small-particle limit
+    (C_abs ~ a^3, C_sca ~ a^6), then interpolated in ln(lambda)."""
+    ae = max(a_um, 1e-3)
+    qa, qs, g = optics("gra", ae)
+    geo = np.pi * (ae * UM) ** 2
+    s = a_um / ae
+    return to_fine(geo * qa) * s ** 3, to_fine(geo * qs) * s ** 6, to_fine(g)
+
+
+def pah_optics(a_um, charge, model="DL07"):
+    """Q_abs, Q_sca, g on the fine grid for a PAH-graphite grain (DL07 Eq. 4).  Scattering is
+    that of a graphite sphere (negligible at these sizes)."""
+    NC = nc_pah(a_um, model)
+    ca_gra, cs_gra, g = graphite_on_fine(a_um)
+    cabs = (1 - xi_gra(a_um)) * NC * pah_cabs_per_c(LAMF, NC, charge, model) + xi_gra(a_um) * ca_gra
+    # ⚠ For cations the negative 1.905 um "resonance" of DL07 outweighs everything else and
+    # leaves C_abs < 0 near 1.9 um (-1.6e-22 cm^2/C); DL07 intend it only to suppress
+    # absorption there, so the total is floored at zero.
+    cabs = np.maximum(cabs, 0.0)
+    geo = np.pi * (a_um * UM) ** 2
+    return cabs / geo, cs_gra / geo, g
+
+
+class PAHEnthalpy(Enthalpy):
+    """E(T) for a PAH: N_H Einstein oscillators for each C-H mode plus the 2-D Debye C-C modes
+    (DL01 Eq. eq:E_PAH_Debye), with H/C from hc_ratio."""
+
+    def __init__(self, a_um, model="DL07"):
+        self.NC = nc_pah(a_um, model)
+        self.NH = float(hc_ratio(self.NC)) * self.NC
+        self.N = self.NC + self.NH
+        self.E1 = e_first_mode("pah", self.NC)
+        self.mass = self.NC * M_C + self.NH * M_H
+        T = TGRID_E
+        ech = sum(KB * HC_OVER_K * w / np.expm1(np.minimum(HC_OVER_K * w / T, 700)) for w in CH_MODES)
+        self.lT = np.log(T)
+        self.lE = np.log(self.NH * ech + (self.NC - 2) * e_per_mode_set("gra", T))
 
 
 # ------------------------------------------------------------------ tables
@@ -591,52 +796,123 @@ def mrn_abundance(mat, q=3.5, amin=0.005, amax=0.25):
 
 SIZE_BINS = [(0.0, 0.01), (0.01, 0.1), (0.1, np.inf)]   # um, for splitting the emission
 
+# PAHs: a log-normal in radius (DL07 Eq. 6, one component), dn/da = (n0/a) exp[-ln^2(a/a0)/2 sigma^2]
+# for a >= PAH_AMIN, normalized to abund ppm of C per H.  Emission and optics are computed at
+# PAH_GRID nodes (15 per decade) and interpolated as (per-grain quantity)/a^3, as for the others.
+PAH_GRID = 10 ** np.linspace(np.log10(PAH_AMIN), np.log10(0.05), 34)
+
+
+def pah_amax(a0, sigma):
+    return float(np.clip(a0 * np.exp(4 * sigma), 2 * a0, 0.05))
+
+
+def lognormal_weights(a0, sigma, abund, nper=120):
+    """Nodes and weights for (1/n_H) int dn/da F da over [PAH_AMIN, a0 e^{4 sigma}]."""
+    lo, hi = np.log(PAH_AMIN), np.log(pah_amax(a0, sigma))
+    n = max(int(np.ceil((hi - lo) / np.log(10) * nper)) + 1, 2)
+    lx = np.linspace(lo, hi, n)
+    ax = np.exp(lx)
+    tw = np.full(n, lx[1] - lx[0])
+    tw[0] = tw[-1] = 0.5 * (lx[1] - lx[0])
+    shape = np.exp(-0.5 * ((lx - np.log(a0)) / sigma) ** 2) * tw      # dn/dln a dln a, up to n0
+    A = abund * 1e-6 / np.sum(shape * nc_pah(ax))
+    return ax, A * shape
+
+
+def interp_nodes(nodes, vals, a):
+    """Interpolate vals (len(nodes), ...) to radii a, linearly in ln a (clamped)."""
+    la = np.log(nodes)
+    x = np.clip(np.log(a), la[0], la[-1])
+    i = np.clip(np.searchsorted(la, x) - 1, 0, len(la) - 2)
+    t = ((x - la[i]) / (la[i + 1] - la[i])).reshape((-1,) + (1,) * (vals.ndim - 1))
+    return (1 - t) * vals[i] + t * vals[i + 1]
+
+
+def pah_node_data(U, cache=None):
+    """Per-node optics (C_abs neutral/ion, C_sca) and emission (neutral/ion) for the PAHs."""
+    key = ("pah", U)
+    if cache is not None and key in cache:
+        return cache[key]
+    n = len(PAH_GRID)
+    d = dict(cabs={c: np.zeros((n, FINE.n)) for c in ("neu", "ion")}, csca=np.zeros((n, FINE.n)),
+             em={c: np.zeros((n, FINE.n)) for c in ("neu", "ion")}, pabs={c: np.zeros(n) for c in ("neu", "ion")})
+    for i, a in enumerate(PAH_GRID):
+        geo = np.pi * (a * UM) ** 2
+        for c in ("neu", "ion"):
+            opt = pah_optics(a, c)
+            g = Grain("pah", a, U, opt=opt, charge=c)
+            d["cabs"][c][i] = geo * opt[0]
+            d["csca"][i] = geo * opt[1]
+            d["em"][c][i] = g.emission()[0]
+            d["pabs"][c][i] = g.Pabs
+    if cache is not None:
+        cache[key] = d
+    return d
+
 
 def distribution(params, U, tables, emis_cache=None):
-    """Extinction, scattering, emission and mass per H for power-law size distributions.
+    """Extinction, scattering, emission and mass per H for the size distributions in params.
 
-    params: {mat: dict(q=, amin=, amax=, abund=)} for the materials that are switched on.
-    tables: {mat: optics_table(mat)} on A_GRID.
-    Returns per-H quantities on LAM: 'ext', 'sca' (cm^2/H), 'em' (lambda I_lambda / N_H,
-    erg s^-1 sr^-1 H^-1), each a dict over materials, plus 'ext_size', 'sca_size' and
-    'em_size' (summed over materials, split by SIZE_BINS), 'mass' (g/H) and 'pabs'
-    (erg s^-1 H^-1)."""
-    out = dict(ext={}, sca={}, em={}, mass={}, pabs={}, em_size=[np.zeros(NLAM) for _ in SIZE_BINS],
-               ext_size=[np.zeros(NLAM) for _ in SIZE_BINS], sca_size=[np.zeros(NLAM) for _ in SIZE_BINS])
+    params: {mat: dict(...)} for the populations switched on: "sil", "gra" with q, amin, amax,
+    abund (power laws), and "pah" with a0, sigma, abund, fion (log-normal; fion = ionized
+    fraction).  tables: {mat: optics_table(mat)} on A_GRID for silicate and graphite.
+    Returns per-H quantities on the fine grid LAMF: 'ext', 'sca' (cm^2/H), 'em' (lambda I_lambda
+    / N_H, erg s^-1 sr^-1 H^-1), each a dict over materials; 'ext_size', 'sca_size', 'em_size'
+    (summed over materials, split by SIZE_BINS); 'mass' (g/H) and 'pabs' (erg s^-1 H^-1).
+    Silicate and graphite are computed on the coarse grid and interpolated onto the fine one."""
+    nF = FINE.n
+    out = dict(ext={}, sca={}, em={}, mass={}, pabs={}, em_size=[np.zeros(nF) for _ in SIZE_BINS],
+               ext_size=[np.zeros(nF) for _ in SIZE_BINS], sca_size=[np.zeros(nF) for _ in SIZE_BINS])
     for mat, p in params.items():
-        ax, w = powerlaw_weights(mat, p["q"], p["amin"], p["amax"], p["abund"])
-        Q = interp_in_a(np.moveaxis(tables[mat], 0, 1), ax)          # (n, 3, NLAM)
-        geo = np.pi * (ax * UM) ** 2
-        out["ext"][mat] = np.sum((w * geo)[:, None] * (Q[:, 0] + Q[:, 1]), axis=0)
-        out["sca"][mat] = np.sum((w * geo)[:, None] * Q[:, 1], axis=0)
-        out["mass"][mat] = np.sum(w * grain_mass(mat, ax))
-        for k, (lo, hi) in enumerate(SIZE_BINS):
-            sel = ((ax >= lo) & (ax < hi)) * w * geo
-            out["ext_size"][k] += np.sum(sel[:, None] * (Q[:, 0] + Q[:, 1]), axis=0)
-            out["sca_size"][k] += np.sum(sel[:, None] * Q[:, 1], axis=0)
-        # emission per grain at the table nodes that bracket [amin, amax], then
-        # interpolated in ln a as (power per grain) / a^3
-        i0 = max(0, np.searchsorted(A_GRID, p["amin"]) - 1)
-        i1 = min(len(A_GRID) - 1, np.searchsorted(A_GRID, p["amax"]))
-        node = np.zeros((len(A_GRID), NLAM))
-        pab = np.zeros(len(A_GRID))
-        for i in range(i0, i1 + 1):
-            key = (mat, i, U)
-            if emis_cache is not None and key in emis_cache:
-                node[i], pab[i] = emis_cache[key]
-                continue
-            g = Grain(mat, A_GRID[i], U, opt=tuple(tables[mat][:, i]))
-            em, _, _, _ = g.emission()
-            node[i], pab[i] = em, g.Pabs
-            if emis_cache is not None:
-                emis_cache[key] = (em, g.Pabs)
-        per_a3 = interp_in_a(node / A_GRID[:, None] ** 3, ax) * (ax ** 3)[:, None]
-        pab_a = interp_in_a((pab / A_GRID ** 3)[:, None], ax)[:, 0] * ax ** 3
-        out["em"][mat] = LAM * np.sum(w[:, None] * per_a3, axis=0) / (4 * np.pi)
-        out["pabs"][mat] = np.sum(w * pab_a)
+        if mat == "pah":
+            ax, w = lognormal_weights(p["a0"], p["sigma"], p["abund"])
+            d = pah_node_data(U, emis_cache)
+            f = p["fion"]
+            a3 = (ax ** 3)[:, None]
+            n3 = (PAH_GRID ** 3)[:, None]
+            cabs = interp_nodes(PAH_GRID, ((1 - f) * d["cabs"]["neu"] + f * d["cabs"]["ion"]) / n3, ax) * a3
+            csca = interp_nodes(PAH_GRID, d["csca"] / n3, ax) * a3
+            em = interp_nodes(PAH_GRID, ((1 - f) * d["em"]["neu"] + f * d["em"]["ion"]) / n3, ax) * a3
+            pab = interp_nodes(PAH_GRID, (((1 - f) * d["pabs"]["neu"] + f * d["pabs"]["ion"]) / PAH_GRID ** 3)[:, None], ax)[:, 0] * ax ** 3
+            ext_k, sca_k, em_k = w[:, None] * (cabs + csca), w[:, None] * csca, LAMF * w[:, None] * em / (4 * np.pi)
+            NC = nc_pah(ax)
+            out["mass"][mat] = np.sum(w * (NC * M_C + hc_ratio(NC) * NC * M_H))
+            out["pabs"][mat] = np.sum(w * pab)
+        else:
+            ax, w = powerlaw_weights(mat, p["q"], p["amin"], p["amax"], p["abund"])
+            Q = interp_in_a(np.moveaxis(tables[mat], 0, 1), ax)          # (n, 3, NLAM)
+            geo = np.pi * (ax * UM) ** 2
+            ext_k = np.array([to_fine(v) for v in (w * geo)[:, None] * (Q[:, 0] + Q[:, 1])])
+            sca_k = np.array([to_fine(v) for v in (w * geo)[:, None] * Q[:, 1]])
+            out["mass"][mat] = np.sum(w * grain_mass(mat, ax))
+            # emission per grain at the table nodes that bracket [amin, amax], interpolated in
+            # ln a as (power per grain) / a^3
+            i0 = max(0, np.searchsorted(A_GRID, p["amin"]) - 1)
+            i1 = min(len(A_GRID) - 1, np.searchsorted(A_GRID, p["amax"]))
+            node = np.zeros((len(A_GRID), NLAM))
+            pab = np.zeros(len(A_GRID))
+            for i in range(i0, i1 + 1):
+                key = (mat, i, U)
+                if emis_cache is not None and key in emis_cache:
+                    node[i], pab[i] = emis_cache[key]
+                    continue
+                g = Grain(mat, A_GRID[i], U, opt=tuple(tables[mat][:, i]))
+                em, _, _, _ = g.emission()
+                node[i], pab[i] = em, g.Pabs
+                if emis_cache is not None:
+                    emis_cache[key] = (em, g.Pabs)
+            per_a3 = interp_in_a(node / A_GRID[:, None] ** 3, ax) * (ax ** 3)[:, None]
+            pab_a = interp_in_a((pab / A_GRID ** 3)[:, None], ax)[:, 0] * ax ** 3
+            em_k = np.array([to_fine(v) for v in LAM * w[:, None] * per_a3 / (4 * np.pi)])
+            out["pabs"][mat] = np.sum(w * pab_a)
+        out["ext"][mat] = ext_k.sum(axis=0)
+        out["sca"][mat] = sca_k.sum(axis=0)
+        out["em"][mat] = em_k.sum(axis=0)
         for k, (lo, hi) in enumerate(SIZE_BINS):
             sel = (ax >= lo) & (ax < hi)
-            out["em_size"][k] += LAM * np.sum((w * sel)[:, None] * per_a3, axis=0) / (4 * np.pi)
+            out["ext_size"][k] += ext_k[sel].sum(axis=0)
+            out["sca_size"][k] += sca_k[sel].sum(axis=0)
+            out["em_size"][k] += em_k[sel].sum(axis=0)
     return out
 
 

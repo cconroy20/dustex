@@ -93,8 +93,8 @@ function check(name, ok, detail) {
   // radius slider: a small grain becomes stochastic
   await setRange("#sA", Math.log10(0.004));
   const r1 = await read();
-  check("small grain: temperature spread reported", /Middle 90% of T[\d.]+ K – [\d.]+ K/.test(r1.replace(/\s+/g, " ")), r1.split(" | ")[4]);
-  check("small grain: stochastic legend", /P\(T\)/.test(await ev(`document.getElementById("lgP").textContent`)));
+  check("small grain: temperature spread reported", /Emits 90% of its energy at ?[\d.]+ K – [\d.]+ K/.test(r1.replace(/\s+/g, " ")), r1.split(" | ")[4]);
+  check("small grain: stochastic legend", /power radiated at/.test(await ev(`document.getElementById("lgP").textContent`)));
   const np = await sweep("#cvP");
   check("hover tooltip on P(T) for a stochastic grain", np >= 6, `${np} distinct`);
   await shot("grain_small.png");
@@ -105,6 +105,31 @@ function check(name, ok, detail) {
   const t2 = await idle();
   check("graphite at U = 1000 computes", t2 >= 0, `${t2} ms`);
   await shot("grain_gra_U1000.png");
+  // PAHs: material, charge, radius range in angstroms
+  await setRange("#sU", 0);
+  await ev(`(e => { e.checked = false; e.dispatchEvent(new Event("change")); })(document.getElementById("eLog"))`);
+  await clickSel("#mPah");
+  const tp = await idle();
+  check("PAH material: temperature panel computes", tp >= 0, `${tp} ms`);
+  check("PAH material: charge row shown, radius in angstroms",
+        !(await ev(`document.getElementById("chRow").hidden`)) && /Å/.test(await ev(`document.getElementById("vA").textContent`)),
+        await ev(`document.getElementById("vA").textContent`));
+  check("PAH readouts list C and H atoms", /C \+ .* H/.test(await read()), (await read()).split(" | ")[0]);
+  check("PAH: stochastic temperature distribution, ground state reported", /ground state/.test(await ev(`document.getElementById("lgP").textContent`)) && /Time in the ground state/.test(await read()));
+  for (const id of ["#cvQ", "#cvE", "#cvP", "#cvT"]) {
+    const n = await sweep(id);
+    check(`PAH hover tooltip across ${id}`, n >= 8, `${n} distinct`);
+  }
+  await shot("grain_pah_neu.png");
+  await clickSel("#chIon");
+  await idle();
+  check("PAH ionized: hash records the charge", /ch=ion/.test(await (async () => { await sleep(400); return ev("location.hash"); })()));
+  await shot("grain_pah_ion.png");
+  await clickSel("#mSil");
+  check("back to silicate: radius moves into the bulk range", +(await ev(`document.getElementById("sA").value`)) >= Math.log10(0.003) - 1e-9);
+  await clickSel("#mGra");
+  await setRange("#sU", 3);
+  await idle();
   // clicking the temperature panel sets the radius
   await scrollTo("#cvT");
   const rt = await rect("#cvT");
@@ -114,6 +139,7 @@ function check(name, ok, detail) {
   await sleep(150);
   const after = await ev(`document.getElementById("sA").value`);
   check("click on the temperature panel moves the radius", Math.abs(after - before) > 0.2, `${before} -> ${after}`);
+  await sleep(400);
   check("hash records state", /t=grain&m=gra/.test(await ev("location.hash")), await ev("location.hash"));
 
   // ---------------------------------------------------------------- distribution
@@ -123,6 +149,14 @@ function check(name, ok, detail) {
   check("distribution tab computes its emission", t3 >= 0, `${t3} ms`);
   const rd = await ev(`[...document.querySelectorAll("#readD .rd")].map(r => r.textContent).join(" | ")`);
   check("distribution readouts filled", /R/.test(rd) && /%/.test(rd), rd);
+  check("default mixture includes PAHs (q_PAH readout, MRN + PAHs preset pressed)",
+        /PAH mass fraction/.test(rd) && (await ev(`document.getElementById("mrnp").getAttribute("aria-pressed")`)) === "true");
+  await setRange("#pahF", 1.0);
+  await idle(); await sleep(150);
+  const rdi = await ev(`[...document.querySelectorAll("#readD .rd")].map(r => r.textContent).join(" | ")`);
+  check("ionized fraction changes the IR readouts", rdi !== rd);
+  await setRange("#pahF", 0.5);
+  await idle();
   await shot("dist_mrn.png");
   for (const id of ["#cvS", "#cvX", "#cvA", "#cvI"]) {
     const n = await sweep(id);

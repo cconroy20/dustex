@@ -7,12 +7,17 @@ mkdir -p rawdata/draine rawdata/dl01 rawdata/ld01 rawdata/mmp83
 # Draine (2003) dielectric functions and Draine's Q tables (used only for checks).
 # His server refuses requests without a curl-like user agent.
 for f in callindex.out_silD03 callindex.out_CpaD03_0.01 callindex.out_CpaD03_0.10 \
-         callindex.out_CpeD03_0.01 callindex.out_CpeD03_0.10 Gra_81.gz suvSil_81.gz; do
+         callindex.out_CpeD03_0.01 callindex.out_CpeD03_0.10 Gra_81.gz suvSil_81.gz \
+         PAHneu_30.gz PAHion_30.gz; do
   curl -sfL -A "curl/8.7.1" -o rawdata/draine/$f https://www.astro.princeton.edu/~draine/dust/diel/$f
 done
 # Draine & Li (2001, ApJ 551, 807) and Li & Draine (2001, ApJ 554, 778): arXiv sources
 curl -sfL -o rawdata/dl01/src.tar.gz https://arxiv.org/e-print/astro-ph/0011318
 curl -sfL -o rawdata/ld01/src.tar.gz https://arxiv.org/e-print/astro-ph/0011319
+# Draine & Li (2007, ApJ 657, 810): PAH band parameters, size distributions, Figs. 3 and 6
+mkdir -p rawdata/dl07
+curl -sfL -o rawdata/dl07/src.tar.gz https://arxiv.org/e-print/astro-ph/0608003
+(cd rawdata/dl07 && tar xzf src.tar.gz)
 (cd rawdata/dl01 && tar xzf src.tar.gz)
 (cd rawdata/ld01 && tar xzf src.tar.gz)
 # Mathis, Mezger & Panagia (1983, A&A 128, 212): ADS scan (image only; Table A3 is

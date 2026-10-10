@@ -13,7 +13,8 @@ extinction, the albedo, the grain temperature and the infrared emission that res
 
 The page runs the whole calculation in the browser, including the Mie series for the single grain and the
 stochastic heating of every size in the distribution; only the Mie efficiencies on the size grid are
-precomputed. PAHs are left out on purpose.
+precomputed. PAHs are included as a third material (single grain, neutral or ionized) and as a log-normal
+population in the size distribution, with an ionized-fraction slider and an "MRN + PAHs" preset.
 
 ## Physics and assumptions
 
@@ -35,11 +36,23 @@ precomputed. PAHs are left out on purpose.
   stochastically: the thermal-continuous approximation of Draine & Li (2001, Sect. 7.2) with their
   finite-bin-width upward rates, solved by the Guhathakurta & Draine (1989) recursion, emission from the
   thermal approximation with photons limited to the grain's energy.
+- **PAHs** (Draine & Li 2007, DL07): cross sections per C atom from Li & Draine (2001) Eqs. 5–11 with the
+  DL07 Table 1 bands and their near-infrared continuum and bands for cations; N_C = 460 (a/1 nm)³; H/C
+  from DL07 Eq. 3; a 1% graphite admixture below 50 Å, rising to pure graphite above (DL07 Eqs. 4–5); heat
+  capacity with N_H Einstein oscillators for the C–H modes plus the Debye C–C modes (DL01); the smallest
+  PAH has 20 C atoms (3.55 Å). Computed on a finer wavelength grid (500 per decade over 3–20 µm), which
+  also carries the size-distribution sums. The size distribution is one log-normal in radius (center,
+  width, C atoms in PAHs); neutral and ionized PAHs are computed separately and mixed by the ionized
+  fraction. The preset takes DL07's first log-normal component (4 Å, σ = 0.4) with 45 ppm of C moved out
+  of graphite; it gives q_PAH = 5.8% (DL07's Milky Way model: 4.6%).
+- **Ground state**: the energy grid never goes below the grain's lowest vibrational mode (from DL01's model
+  mode spectra); that bottom bin is the ground state, radiates nothing, and is reported as the fraction
+  of time spent there. The temperature panels show the temperatures that radiate 90% of the energy.
 - **Reference extinction curve**: CCM89 Eqs. (1)–(5) for R_V = 3.1, read from the ADS scan and identical to
   `dust_extinction`'s implementation to 3e-15; defined for 0.3 ≤ 1/λ ≤ 10 µm⁻¹. Per H it is scaled by
   A_V/N_H = 3.1 / 5.8e21 mag cm², the gas-to-reddening ratio of Bohlin, Savage & Drake (1978, abstract).
-- **Left out**: PAHs and their bands, non-spherical grains, ices, coatings and porosity, grain charge,
-  sublimation (temperatures are capped at 4900 K), and the infrared part of the radiation field.
+- **Left out**: non-spherical grains, ices, coatings and porosity, grain charging (the PAH ionized fraction
+  is set by hand), sublimation (temperatures are capped at 4900 K), and the infrared part of the field.
 
 ## Things worth knowing (found while building this)
 
@@ -69,6 +82,23 @@ precomputed. PAHs are left out on purpose.
    H 0.190 vs 0.192; K 0.114 vs 0.116), although the footnote says the table comes from Eqs. (2)–(3). U, V,
    R, I and J agree. The equations are used here, as in `dust_extinction`.
 
+8. **DL07's cation cross section goes negative near 1.9 µm.** Their negative 1.905 µm "resonance"
+   (σ_int = −146.5e-20 cm/C, meant to suppress absorption at 1.8–2.0 µm) outweighs the continuum and the
+   1.05 µm band wing even with the 1% graphite admixture, leaving C_abs ≈ −1.6e-22 cm²/C. The total is
+   floored at zero; it shows as a small notch at 1.9 µm.
+9. **DL07's text and Table 1 disagree on several band widths** (6.2 µm γ = 0.0284 in the text, 0.030 in the
+   table; also 11.99 and 12.7 µm), and Table 1 row 29 (18.92 µm) reads γ = 0.10, σ = 0.10 (neutral), 0.17
+   (ionized) after a commented-out older row. The table is used as printed. Against DL07 Fig. 3a the
+   implementation is 1–24% high at band peaks; against their Fig. 6 (band emission fractions vs size, 205
+   digitized points) the median ratio is 1.07, by band 1.00 (7.7, 8.6 µm) to 1.17 (11.3 µm).
+10. **Draine's tabulated PAH cross sections (PAHneu_30, PAHion_30) follow LD01, but with broader 11.3 and
+    12.7 µm bands than LD01 Table 1.** With LD01's own parameters the code matches the tables to 5% except
+    in 10–13.5 µm, where the band integral agrees to 7% and only the profile widths differ.
+11. **The smallest grains need a ground state.** Without it the thermal-continuous scheme lets a 5 Å PAH
+    linger at 35–50 K between photons; with the energy floor at the lowest vibrational mode it spends 98.9%
+    of the time in the ground state. For silicate this reproduces LD01's P_0 at 5 and 10 Å (1.000 vs 0.999,
+    0.991 vs 0.994); at 25 Å it gives 0.09 against their exact 0.23.
+
 ## Files
 
 | File | Purpose |
@@ -77,11 +107,12 @@ precomputed. PAHs are left out on purpose.
 | `web/physics.js` | the browser port of dustlib (checked against it to ~1e-14) |
 | `web/app.js`, `web/index.html`, `web/style.css` | the page |
 | `exportweb.py` | writes `web/data/dust.json` + `dust.bin` (Q tables, dielectric functions, field, enthalpies) |
-| `validate.py` | 30 checks against the sources and of the port; `python3 validate.py` (~40 s) |
+| `validate.py` | 39 checks against the sources and of the port; `python3 validate.py` (~1 min) |
 | `testjs.js` | runs physics.js under node for validate.py |
 | `uitest.js` | drives the page in headless Chrome (sliders, tabs, hovers, clicks, hash, phone width) |
 | `fetch.sh` | downloads every primary source into `rawdata/` |
 | `data/mmp83_tableA3.txt` | the transcribed MMP83 table (with the two corrections) |
+| `data/dl07_fig6.json` | DL07 Fig. 6 band emission fractions, digitized for validate.py |
 | `deploy.sh` | publishes `web/` to the gh-pages branch |
 
 ## Running
@@ -101,4 +132,4 @@ Draine & Lee (1984, ApJ 285, 89) · Draine & Malhotra (1993, ApJ 414, 632) · Dr
 Draine & Li (2001, ApJ 551, 807) · Li & Draine (2001, ApJ 554, 778) · Guhathakurta & Draine (1989, ApJ 345,
 230) · Mathis, Mezger & Panagia (1983, A&A 128, 212) · Cardelli, Clayton & Mathis (1989, ApJ 345, 245) ·
 Bohlin, Savage & Drake (1978, ApJ 224, 132) · Mathis, Rumpl & Nordsieck (1977, ApJ 217, 425) ·
-Fixsen (2009, ApJ 707, 916).
+Fixsen (2009, ApJ 707, 916) · Draine & Li (2007, ApJ 657, 810) · Mattioda, Allamandola & Hudgins (2005).

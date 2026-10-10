@@ -13,8 +13,9 @@ const FONT = 'Charter, "PT Serif", Palatino, Georgia, "DejaVu Serif", serif';
 // colorblind-safe pairs (dataviz validator: protan/deutan dE >= 9.7 for every pair used together)
 const C = { ink: "#1a1a1a", lab: "#3b3733", muted: "#6a6560", faint: "#a39c92", frame: "#cfc8bd",
             abs: "#004C8C", sca: "#00897B", emi: "#C2571A",
-            sil: "#B5533C", gra: "#2F5D8C", size: ["#9D7BC9", "#6A3D9A", "#3B1F5E"] };
-const MATNAME = { sil: "Silicate", gra: "Graphite" };
+            sil: "#B5533C", gra: "#2F5D8C", pah: "#00A39A", size: ["#9D7BC9", "#6A3D9A", "#3B1F5E"] };
+const MATNAME = { sil: "Silicate", gra: "Graphite", pah: "PAHs" };
+const MATS3 = ["sil", "gra", "pah"];
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const L10 = v => (v > 0 ? Math.log10(v) : -Infinity);
@@ -23,21 +24,29 @@ const MH = 1.6735575e-24;          // g, mass of an H atom
 const KEY_UM = { V: 0.55, B: 0.44 };
 
 // slider ranges (log10 where noted)
-const R = { U: [-2, 4], a: [Math.log10(0.003), Math.log10(3)], q: [2.5, 4.5],
-            amin: [Math.log10(0.003), Math.log10(0.1)], amax: [Math.log10(0.03), Math.log10(3)],
-            ab: { sil: [0, 60], gra: [0, 400] } };
+const R = { U: [-2, 4], a: [Math.log10(0.003), Math.log10(3)], aPah: [Math.log10(3.55e-4), Math.log10(0.03)],
+            q: [2.5, 4.5], amin: [Math.log10(0.003), Math.log10(0.1)], amax: [Math.log10(0.03), Math.log10(3)],
+            ab: { sil: [0, 60], gra: [0, 400], pah: [0, 100] },
+            a0: [Math.log10(3.55e-4), Math.log10(0.003)], sigma: [0.2, 0.8], fion: [0, 1] };
+const aRange = m => (m === "pah" ? R.aPah : R.a);
 const T_NODES = [11, 88];          // size-grid nodes spanning the radius slider (0.003-3 um)
+let T_NODES_PAH = [0, 0];          // PAH nodes spanning its radius slider, set at start
 
 let S = null, DEF = null;
 
-function mrnDist() {
+// MRN (DL84 normalization), alone or with PAHs: a log-normal at 4 A, sigma = 0.4 (the first
+// component of Draine & Li 2007) holding 45 ppm of C, taken out of the graphite
+const PAH_PRESET = { a0: Math.log10(4e-4), sigma: 0.4, abund: 45, fion: 0.5 };
+function presetDist(withPAH) {
   const d = {};
   for (const m of ["sil", "gra"])
     d[m] = { on: true, q: 3.5, amin: Math.log10(0.005), amax: Math.log10(0.25), abund: +P.MRN[m].toFixed(1) };
+  d.pah = Object.assign({ on: withPAH }, PAH_PRESET);
+  if (withPAH) d.gra.abund = Math.round(P.MRN.gra - PAH_PRESET.abund);
   return d;
 }
 function defaults() {
-  return { tab: "grain", U: 0, mat: "sil", a: -1, dist: mrnDist(),
+  return { tab: "grain", U: 0, mat: "sil", a: -1, charge: "neu", dist: presetDist(true),
            elog: false, plin: false, sd: "mass", xn: "H", xs: "mat", xa: "inv", sp: "mat" };
 }
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -284,15 +293,20 @@ function legend(el, items) {
 function local(cv, ev) { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
 
 // ------------------------------------------------------------------ wavelength helpers
-let LAMLOG = null;           // log10 of the wavelength grid
-function lamIndex(l10) {
-  const n = LAMLOG.length, u = (l10 - LAMLOG[0]) / (LAMLOG[1] - LAMLOG[0]);
-  return clamp(Math.round(u), 0, n - 1);
+let LLC = null, LLF = null;  // log10 of the coarse and fine wavelength grids
+function bracket(LL, u) {       // k with LL[k] <= u < LL[k+1], clamped
+  let lo = 0, hi = LL.length - 1;
+  if (u <= LL[0]) return 0;
+  if (u >= LL[hi]) return hi - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (LL[m] > u) hi = m; else lo = m; }
+  return lo;
 }
-function atLam(arr, lam) {     // log-log interpolation at a wavelength in um
-  const l = Math.log10(lam), n = LAMLOG.length;
-  const u = (l - LAMLOG[0]) / (LAMLOG[1] - LAMLOG[0]);
-  const k = clamp(Math.floor(u), 0, n - 2), t = u - k;
+function nearestIndex(LL, u) {
+  const k = bracket(LL, u);
+  return Math.abs(LL[k + 1] - u) < Math.abs(LL[k] - u) ? k + 1 : k;
+}
+function atLam(LL, arr, lam) {  // log-log interpolation at a wavelength in um
+  const l = Math.log10(lam), k = bracket(LL, l), t = clamp((l - LL[k]) / (LL[k + 1] - LL[k]), 0, 1);
   if (arr[k] > 0 && arr[k + 1] > 0) return Math.exp((1 - t) * Math.log(arr[k]) + t * Math.log(arr[k + 1]));
   return (1 - t) * arr[k] + t * arr[k + 1];
 }
@@ -301,15 +315,15 @@ function atLam(arr, lam) {     // log-log interpolation at a wavelength in um
 let G1 = null;
 function computeGrain() {
   const a = Math.pow(10, S.a), U = Math.pow(10, S.U);
-  const opt = P.optics(S.mat, a);
-  const g = new P.Grain(S.mat, a, U, opt);
+  const opt = S.mat === "pah" ? P.pahOptics(a, S.charge) : P.optics(S.mat, a);
+  const g = new P.Grain(S.mat, a, U, opt, S.charge);
   const r = g.emission();
   const [Rph, S1] = g.photonStats();
-  const n = P.NL, eq = new Float64Array(n);
-  for (let i = 0; i < n; i++) eq[i] = 4 * Math.PI * g.Cabs[i] * P.planck(i, g.Teq);
+  const eq = g.eqEmission();
   const Eeq = g.H.E(g.Teq), hnu = S1 / Rph;
-  const pct = P.percentiles(r.T, r.P, [0.05, 0.95]);
-  G1 = { a, U, mat: S.mat, opt, g, r, eq, Rph, hnu, Eeq, Tjump: g.H.T(Eeq + hnu), pct };
+  const pct = P.powerPercentiles(r, [0.05, 0.95]);
+  G1 = { a, U, mat: S.mat, opt, g, r, eq, Rph, hnu, Eeq, Tjump: g.H.T(Eeq + hnu), pct,
+         LL: S.mat === "pah" ? LLF : LLC, lam: g.G.lam };
 }
 
 // ------------------------------------------------------------------ per-size nodes (shared)
@@ -320,18 +334,24 @@ const NODE = new Map();
 let queue = [], running = false;
 const ukey = () => S.U.toFixed(2);
 const nkey = (m, i, uk) => m + "|" + i + "|" + uk;
+const nodeMat = m => (m === "pah" ? "pah:" + S.charge : m);            // node-cache material key
+const nodeA = (m, i) => (m === "pah" ? P.PAH_GRID[i] : P.A_GRID[i]);   // radius of a node
+const tNodes = () => (S.mat === "pah" ? T_NODES_PAH : T_NODES);
 function neededNodes() {
   const list = [];
   if (S.tab === "grain") {
-    const ia = Math.round((S.a + 3) * 25);
-    for (let i = T_NODES[0]; i <= T_NODES[1]; i++) list.push([S.mat, i]);
-    list.sort((p, q) => Math.abs(p[1] - ia) - Math.abs(q[1] - ia));
+    const nodes = tNodes(), key = nodeMat(S.mat);
+    for (let i = nodes[0]; i <= nodes[1]; i++) list.push([key, i]);
+    list.sort((p, q) => Math.abs(Math.log(nodeA(S.mat, p[1])) - S.a * Math.LN10) - Math.abs(Math.log(nodeA(S.mat, q[1])) - S.a * Math.LN10));
   } else {
-    for (const m of ["sil", "gra"]) {
-      const d = S.dist[m];
-      if (!d.on) continue;
-      const [i0, i1] = P.nodeRange(Math.pow(10, d.amin), Math.pow(10, d.amax));
-      for (let i = i0; i <= i1; i++) list.push([m, i]);
+    for (const m of onMats()) {
+      if (m === "pah") {
+        const d = distParams("pah"), [i0, i1] = P.pahNodeRange(d.a0, d.sigma);
+        for (const ch of ["neu", "ion"]) for (let i = i0; i <= i1; i++) list.push(["pah:" + ch, i]);
+      } else {
+        const d = S.dist[m], [i0, i1] = P.nodeRange(Math.pow(10, d.amin), Math.pow(10, d.amax));
+        for (let i = i0; i <= i1; i++) list.push([m, i]);
+      }
     }
   }
   return list;
@@ -348,7 +368,10 @@ function work() {
   while (queue.length && performance.now() - t0 < 14) {
     const [m, i, uk] = queue.shift();
     const k = nkey(m, i, uk);
-    if (!NODE.has(k)) NODE.set(k, P.nodeEmission(m, i, Math.pow(10, parseFloat(uk))));
+    if (!NODE.has(k)) {
+      const U = Math.pow(10, parseFloat(uk));
+      NODE.set(k, m.startsWith("pah:") ? P.nodeEmission("pah", i, U, m.slice(4)) : P.nodeEmission(m, i, U));
+    }
   }
   if (queue.length) setTimeout(work, 0); else running = false;
   if (S.tab === "grain") drawT(); else if (!queue.length) { computeDistEm(); drawI(); readDist(); }
@@ -364,16 +387,17 @@ function pendingNote() {
 let DO = null, DE = null;
 function distParams(m) {
   const d = S.dist[m];
+  if (m === "pah") return { a0: Math.pow(10, d.a0), sigma: d.sigma, abund: d.abund, fion: d.fion };
   return { q: d.q, amin: Math.pow(10, d.amin), amax: Math.pow(10, d.amax), abund: d.abund };
 }
-const onMats = () => ["sil", "gra"].filter(m => S.dist[m].on && S.dist[m].abund > 0);
+const onMats = () => MATS3.filter(m => S.dist[m].on && S.dist[m].abund > 0);
 function computeDistOptics() {
   const out = { mats: onMats(), ext: {}, sca: {}, mass: {} };
-  const n = P.NL;
+  const n = P.GF.n;
   out.extT = new Float64Array(n); out.scaT = new Float64Array(n);
   out.extB = P.SIZE_BINS.map(() => new Float64Array(n)); out.scaB = P.SIZE_BINS.map(() => new Float64Array(n));
   for (const m of out.mats) {
-    const o = P.distOptics(m, distParams(m));
+    const o = m === "pah" ? P.distOpticsPAH(distParams(m)) : P.distOptics(m, distParams(m));
     out.ext[m] = o.ext; out.sca[m] = o.sca; out.mass[m] = o.mass;
     for (let j = 0; j < n; j++) {
       out.extT[j] += o.ext[j]; out.scaT[j] += o.sca[j];
@@ -384,16 +408,28 @@ function computeDistOptics() {
 }
 // emission per H, if every node it needs is ready; otherwise the last result stays, marked stale
 function computeDistEm() {
-  const uk = ukey(), n = P.NL, mats = onMats();
+  const uk = ukey(), n = P.GF.n, mats = onMats();
   const res = { key: "", mats, em: {}, bins: [0, 1, 2].map(() => new Float64Array(n)), tot: new Float64Array(n), pabs: 0 };
   for (const m of mats) {
-    const p = distParams(m), [i0, i1] = P.nodeRange(p.amin, p.amax), nodes = [];
-    for (let i = i0; i <= i1; i++) {
-      const v = NODE.get(nkey(m, i, uk));
-      if (!v) { if (DE) DE.stale = true; return; }
-      nodes[i] = v;
+    const p = distParams(m);
+    let e;
+    if (m === "pah") {
+      const [i0, i1] = P.pahNodeRange(p.a0, p.sigma), nodes = { neu: [], ion: [] };
+      for (const ch of ["neu", "ion"]) for (let i = i0; i <= i1; i++) {
+        const v = NODE.get(nkey("pah:" + ch, i, uk));
+        if (!v) { if (DE) DE.stale = true; return; }
+        nodes[ch][i] = v;
+      }
+      e = P.distEmissionPAH(p, nodes);
+    } else {
+      const [i0, i1] = P.nodeRange(p.amin, p.amax), nodes = [];
+      for (let i = i0; i <= i1; i++) {
+        const v = NODE.get(nkey(m, i, uk));
+        if (!v) { if (DE) DE.stale = true; return; }
+        nodes[i] = v;
+      }
+      e = P.distEmission(m, p, nodes);
     }
-    const e = P.distEmission(m, p, nodes);
     res.em[m] = e.em; res.pabs += e.pabs;
     for (let j = 0; j < n; j++) { res.tot[j] += e.em[j]; for (let k = 0; k < 3; k++) res.bins[k][j] += e.bins[k][j]; }
   }
@@ -425,7 +461,7 @@ function drawQ() {
   const { ctx, w, h } = fit($("cvQ"));
   const A = axes({ l: 74, r: w - 20, t: 10, b: h - 6 }, LX[0], LX[1], -7, 1);
   AQ = A;
-  const o = G1.opt, n = P.NL;
+  const o = G1.opt, n = G1.LL.length;
   const qe = new Float64Array(n), qa = new Float64Array(n), qs = new Float64Array(n);
   for (let i = 0; i < n; i++) { qa[i] = L10(o.Qabs[i]); qs[i] = L10(o.Qsca[i]); qe[i] = L10(o.Qabs[i] + o.Qsca[i]); }
   frame(ctx, A);
@@ -433,15 +469,15 @@ function drawQ() {
   logTicks(ctx, A, "y", { every: 2 });
   ylabel(ctx, A, mk("Efficiency *Q*"));
   if (HOV && HOV.grp === "q") vline(ctx, A, HOV.u, C.faint);
-  curve(ctx, A, LAMLOG, qs, C.sca, 2, [7, 4]);
-  curve(ctx, A, LAMLOG, qa, C.abs, 2);
-  curve(ctx, A, LAMLOG, qe, C.ink, 2.2);
+  curve(ctx, A, G1.LL, qs, C.sca, 2, [7, 4]);
+  curve(ctx, A, G1.LL, qa, C.abs, 2);
+  curve(ctx, A, G1.LL, qe, C.ink, 2.2);
 }
 function drawW() {
   const { ctx, w, h } = fit($("cvW"));
   const A = axes({ l: 74, r: w - 20, t: 6, b: h - 46 }, LX[0], LX[1], 0, 1);
   AW = A;
-  const o = G1.opt, n = P.NL, al = new Float64Array(n);
+  const o = G1.opt, n = G1.LL.length, al = new Float64Array(n);
   for (let i = 0; i < n; i++) al[i] = o.Qsca[i] / (o.Qabs[i] + o.Qsca[i]);
   frame(ctx, A);
   logTicks(ctx, A, "x", { plain: true });
@@ -449,17 +485,17 @@ function drawW() {
   xlabel(ctx, A, mk("Wavelength λ (µm)"));
   ylabel(ctx, A, mk("Albedo, *g*"));
   if (HOV && HOV.grp === "q") vline(ctx, A, HOV.u, C.faint);
-  curve(ctx, A, LAMLOG, o.g, C.ink, 1.6, [2, 3]);
-  curve(ctx, A, LAMLOG, al, C.sca, 2);
+  curve(ctx, A, G1.LL, o.g, C.ink, 1.6, [2, 3]);
+  curve(ctx, A, G1.LL, al, C.sca, 2);
 }
 function hoverQ(ev, A, cv) {
   const [x, y] = local(cv, ev);
   if (!A || x < A.box.l || x > A.box.r) { HOV = null; hideTip(); drawQ(); drawW(); return; }
-  const u = A.ux(x), i = lamIndex(u), o = G1.opt;
-  HOV = { grp: "q", u: LAMLOG[i] };
+  const u = A.ux(x), i = nearestIndex(G1.LL, u), o = G1.opt;
+  HOV = { grp: "q", u: G1.LL[i] };
   drawQ(); drawW();
   const qe = o.Qabs[i] + o.Qsca[i];
-  showTip(ev, [{ head: `λ = ${numHTML(P.LAM[i], 3)} µm` },
+  showTip(ev, [{ head: `λ = ${numHTML(G1.lam[i], 3)} µm` },
     { k: "<i>Q</i><sub>ext</sub>", v: numHTML(qe, 3), sw: C.ink }, { k: "<i>Q</i><sub>abs</sub>", v: numHTML(o.Qabs[i], 3), sw: C.abs },
     { k: "<i>Q</i><sub>sca</sub>", v: numHTML(o.Qsca[i], 3), sw: C.sca, dash: true },
     { k: "albedo", v: (o.Qsca[i] / qe).toFixed(3), sw: C.sca }, { k: "<i>g</i>", v: o.g[i].toFixed(3), sw: C.ink, dash: true }]);
@@ -468,11 +504,11 @@ function hoverQ(ev, A, cv) {
 
 function drawE() {
   const { ctx, w, h } = fit($("cvE"));
-  const n = P.NL, g = G1.g, m = g.mass;
+  const n = G1.LL.length, g = G1.g, m = g.mass;
   const ab = new Float64Array(n), em = new Float64Array(n), eq = new Float64Array(n);
   let mx = 0;
   for (let i = 0; i < n; i++) {
-    const l = P.LAM[i];
+    const l = G1.lam[i];
     ab[i] = l * g.pabsLam[i] / m; em[i] = l * G1.r.em[i] / m; eq[i] = l * G1.eq[i] / m;
     mx = Math.max(mx, ab[i], em[i]);
   }
@@ -501,11 +537,11 @@ function drawE() {
   xlabel(ctx, A, mk("Wavelength λ (µm)"));
   if (HOV && HOV.grp === "e") vline(ctx, A, HOV.u, C.faint);
   const base = S.elog ? A.y0 : 0;
-  fillTo(ctx, A, LAMLOG, ya, base, C.abs, 0.10);
-  fillTo(ctx, A, LAMLOG, ye, base, C.emi, 0.12);
-  if (G1.r.stochastic) curve(ctx, A, LAMLOG, yq, C.emi, 1.6, [6, 4]);
-  curve(ctx, A, LAMLOG, ya, C.abs, 2);
-  curve(ctx, A, LAMLOG, ye, C.emi, 2.2);
+  fillTo(ctx, A, G1.LL, ya, base, C.abs, 0.10);
+  fillTo(ctx, A, G1.LL, ye, base, C.emi, 0.12);
+  if (G1.r.stochastic) curve(ctx, A, G1.LL, yq, C.emi, 1.6, [6, 4]);
+  curve(ctx, A, G1.LL, ya, C.abs, 2);
+  curve(ctx, A, G1.LL, ye, C.emi, 2.2);
   const items = [{ color: C.abs, label: "absorbed", tip: "starlight and CMB absorbed, c u_λ C_abs" },
                  { color: C.emi, label: G1.r.stochastic ? "emitted (stochastic heating)" : "emitted (at <i>T</i><sub>eq</sub>)" }];
   if (G1.r.stochastic) items.push({ color: C.emi, dash: true, label: "emitted if held at <i>T</i><sub>eq</sub>",
@@ -515,8 +551,8 @@ function drawE() {
 function hoverE(ev) {
   const cv = $("cvE"), [x] = local(cv, ev), A = AE;
   if (!A || x < A.box.l || x > A.box.r) { HOV = null; hideTip(); drawE(); return; }
-  const i = lamIndex(A.ux(x)), g = G1.g, l = P.LAM[i];
-  HOV = { grp: "e", u: LAMLOG[i] };
+  const i = nearestIndex(G1.LL, A.ux(x)), g = G1.g, l = G1.lam[i];
+  HOV = { grp: "e", u: G1.LL[i] };
   drawE();
   const rows = [{ head: `λ = ${numHTML(l, 3)} µm` },
     { k: "absorbed", v: numHTML(l * g.pabsLam[i] / g.mass, 3), sw: C.abs },
@@ -535,24 +571,29 @@ function drawP() {
     lt0 = Math.log10(Teq) - 0.3; lt1 = Math.log10(Teq) + 0.3;
     A = axes(box, lt0, lt1, S.plin ? 0 : -6, S.plin ? 1.08 : 0.3);
   } else {
+    // densities per ln T of the time (P_j) and of the radiated power (P_j L_j), excited levels
+    // only: the bottom bin is the ground state, reported in the legend
     const nT = r.T.length, dl = Math.log(r.T[1] / r.T[0]);
-    const dens = Array.from(r.P, p => p / dl);
-    const pk = Math.max(...dens);
-    let j0 = 0, j1 = nT - 1;
-    const thr = S.plin ? 1e-3 : 1e-6;
-    while (j0 < nT - 1 && dens[j0] < thr * pk) j0++;
-    while (j1 > 0 && dens[j1] < thr * pk) j1--;
+    let pw = 0;
+    for (let j = 1; j < nT; j++) pw += r.P[j] * r.down[j];
+    const dens = Array.from(r.P, (p, j) => (j === 0 ? NaN : p / dl));
+    const pdens = Array.from(r.P, (p, j) => (j === 0 ? NaN : p * r.down[j] / pw / dl));
+    const pk = Math.max(...dens.slice(1), ...pdens.slice(1));
+    const thr = S.plin ? 1e-3 : 1e-7;
+    let j0 = 1, j1 = nT - 1;
+    while (j0 < nT - 1 && dens[j0] < thr * pk && pdens[j0] < thr * pk) j0++;
+    while (j1 > 1 && dens[j1] < thr * pk && pdens[j1] < thr * pk) j1--;
     lt0 = Math.log10(Math.min(r.T[j0], Teq)) - 0.06; lt1 = Math.log10(Math.max(r.T[j1], Teq)) + 0.06;
     if (lt1 - lt0 < 0.3) { const c = (lt0 + lt1) / 2; lt0 = c - 0.15; lt1 = c + 0.15; }
-    A = S.plin ? axes(box, lt0, lt1, 0, 1.08 * pk) : axes(box, lt0, lt1, Math.log10(pk) - 6, Math.log10(pk) + 0.3);
-    A.dens = dens;
+    A = S.plin ? axes(box, lt0, lt1, 0, 1.08 * pk) : axes(box, lt0, lt1, Math.log10(pk) - 7, Math.log10(pk) + 0.3);
+    A.dens = dens; A.pdens = pdens;
   }
   AP = A;
   frame(ctx, A);
   logTicks(ctx, A, "x", { plain: true });
   if (r.stochastic) {
     if (S.plin) linTicks(ctx, A, "y", niceStep(A.y1, 4)); else logTicks(ctx, A, "y");
-    ylabel(ctx, A, mk("d*P* / d ln *T*"));
+    ylabel(ctx, A, mk("Fraction per d ln *T*"));
   }
   xlabel(ctx, A, mk("Temperature *T* (K)"));
   vline(ctx, A, Math.log10(Teq), C.ink, [4, 3]);
@@ -560,37 +601,44 @@ function drawP() {
     vline(ctx, A, Math.log10(Teq), C.emi, [], 3);
   } else {
     const us = Array.from(r.T, t => Math.log10(t));
-    const vs = S.plin ? A.dens : A.dens.map(L10);
+    const vs = S.plin ? A.dens : A.dens.map(L10), ps = S.plin ? A.pdens : A.pdens.map(L10);
     fillTo(ctx, A, us, vs, S.plin ? 0 : A.y0, C.emi, 0.12);
+    curve(ctx, A, us, ps, C.ink, 1.8, [6, 3]);
     curve(ctx, A, us, vs, C.emi, 2);
   }
   if (HOV && HOV.grp === "p") vline(ctx, A, HOV.u, C.faint);
+  const gs = r.ground > 1e-3 ? `; ground state ${(100 * r.ground).toFixed(r.ground > 0.995 ? 2 : 1)}% (not drawn)` : "";
   legend($("lgP"), r.stochastic
-    ? [{ color: C.emi, label: "P(T)" }, { color: C.ink, dash: true, label: "<i>T</i><sub>eq</sub>" }]
+    ? [{ color: C.emi, label: "time at <i>T</i>" + gs, tip: "dP/d ln T, the fraction of the time spent per logarithmic interval of temperature" },
+       { color: C.ink, da: [6, 3], label: "power radiated at <i>T</i>", tip: "the fraction of the emitted power radiated per logarithmic interval of temperature" },
+       { color: C.ink, dash: true, label: "<i>T</i><sub>eq</sub>" }]
     : [{ color: C.emi, label: "one steady temperature, <i>T</i><sub>eq</sub> (fluctuations below 1%)" }]);
 }
 function hoverP(ev) {
   const cv = $("cvP"), [x] = local(cv, ev), A = AP;
   if (!A || x < A.box.l || x > A.box.r || !G1.r.stochastic) { if (HOV && HOV.grp === "p") { HOV = null; drawP(); } hideTip(); return; }
   const lt = A.ux(x), r = G1.r;
-  let j = 0, best = Infinity;
-  for (let k = 0; k < r.T.length; k++) { const d = Math.abs(Math.log10(r.T[k]) - lt); if (d < best) { best = d; j = k; } }
+  let j = 1, best = Infinity;
+  for (let k = 1; k < r.T.length; k++) { const d = Math.abs(Math.log10(r.T[k]) - lt); if (d < best) { best = d; j = k; } }
   HOV = { grp: "p", u: Math.log10(r.T[j]) };
   drawP();
-  let cum = 0;
-  for (let k = j; k < r.T.length; k++) cum += r.P[k];
-  showTip(ev, [{ head: `<i>T</i> = ${tHTML(r.T[j])}` }, { k: "d<i>P</i>/d ln <i>T</i>", v: numHTML(A.dens[j], 3), sw: C.emi },
-    { k: "time spent above", v: numHTML(100 * cum, 2) + "%" }]);
+  let cum = 0, cp = 0, pw = 0;
+  for (let k = 1; k < r.T.length; k++) { pw += r.P[k] * r.down[k]; if (k >= j) { cum += r.P[k]; cp += r.P[k] * r.down[k]; } }
+  showTip(ev, [{ head: `<i>T</i> = ${tHTML(r.T[j])}` },
+    { k: "time per d ln <i>T</i>", v: numHTML(A.dens[j], 3), sw: C.emi },
+    { k: "power per d ln <i>T</i>", v: numHTML(A.pdens[j], 3), sw: C.ink, da: [6, 3] },
+    { k: "time spent above", v: numHTML(100 * cum, 2) + "%" }, { k: "power radiated above", v: numHTML(100 * cp / pw, 2) + "%" }]);
 }
 
 function drawT() {
   const { ctx, w, h } = fit($("cvT"));
   const uk = ukey(), us = [], te = [], lo = [], hi = [], tj = [];
-  for (let i = T_NODES[0]; i <= T_NODES[1]; i++) {
-    const v = NODE.get(nkey(S.mat, i, uk));
-    us.push(Math.log10(P.A_GRID[i]));
-    te.push(v ? Math.log10(v.Teq) : NaN); lo.push(v ? Math.log10(v.t05) : NaN);
-    hi.push(v ? Math.log10(v.t95) : NaN); tj.push(v ? Math.log10(v.Tjump) : NaN);
+  const nodes = tNodes(), key = nodeMat(S.mat);
+  for (let i = nodes[0]; i <= nodes[1]; i++) {
+    const v = NODE.get(nkey(key, i, uk));
+    us.push(Math.log10(nodeA(S.mat, i)));
+    te.push(v ? Math.log10(v.Teq) : NaN); lo.push(v ? Math.log10(v.w05) : NaN);
+    hi.push(v ? Math.log10(v.w95) : NaN); tj.push(v ? Math.log10(v.Tjump) : NaN);
   }
   let ymin = Infinity, ymax = -Infinity;
   for (let k = 0; k < us.length; k++) {
@@ -599,7 +647,8 @@ function drawT() {
   }
   if (!isFinite(ymin)) { ymin = Math.log10(G1.g.Teq) - 0.5; ymax = Math.log10(G1.g.Teq) + 1; }
   ymin = Math.max(Math.log10(2), ymin - 0.08); ymax = Math.min(Math.log10(5000), ymax + 0.08);
-  const A = axes({ l: 74, r: w - 14, t: 10, b: h - 46 }, R.a[0], R.a[1], ymin, ymax);
+  const ar = aRange(S.mat);
+  const A = axes({ l: 74, r: w - 14, t: 10, b: h - 46 }, ar[0], ar[1], ymin, ymax);
   AT = A;
   A.data = { us, te, lo, hi, tj };
   frame(ctx, A);
@@ -621,7 +670,7 @@ function drawT() {
   vline(ctx, A, S.a, C.muted);
   cursorHandle(ctx, A, S.a);
   legend($("lgT"), [{ color: C.emi, label: "<i>T</i><sub>eq</sub>" },
-    { band: true, color: C.emi, alpha: 0.25, label: "middle 90% of P(T)" },
+    { band: true, color: C.emi, alpha: 0.25, label: "radiates 90% of its energy", tip: "the temperatures between which the middle 90% of the emitted power is radiated" },
     { color: C.ink, dot: true, label: "after one photon of mean energy" }]);
 }
 function hoverT(ev) {
@@ -630,30 +679,33 @@ function hoverT(ev) {
   const d = A.data, k = clamp(Math.round((A.ux(x) - d.us[0]) / (d.us[1] - d.us[0])), 0, d.us.length - 1);
   if (!isFinite(d.te[k])) { hideTip(); return; }
   const p = v => tHTML(Math.pow(10, v));
-  showTip(ev, [{ head: `<i>a</i> = ${aHTML(Math.pow(10, d.us[k]))}` },
-    { k: "<i>T</i><sub>eq</sub>", v: p(d.te[k]), sw: C.emi }, { k: "middle 90%", v: p(d.lo[k]) + " – " + p(d.hi[k]) },
+  showTip(ev, [{ head: `<i>a</i> = ${aaHTML(Math.pow(10, d.us[k]), S.mat === "pah")}` },
+    { k: "<i>T</i><sub>eq</sub>", v: p(d.te[k]), sw: C.emi }, { k: "radiates 90% at", v: p(d.lo[k]) + " – " + p(d.hi[k]) },
     { k: "after one photon", v: p(d.tj[k]), sw: C.ink, dash: true }]);
 }
 let tDrag = false;
 function setAfromT(ev) {
   const [x] = local($("cvT"), ev);
   if (!AT) return;
-  S.a = clamp(AT.ux(x), R.a[0], R.a[1]);
+  S.a = clamp(AT.ux(x), aRange(S.mat)[0], aRange(S.mat)[1]);
   $("sA").value = S.a;
   changed("grain");
 }
 
 function readGrain() {
   const g = G1.g, o = G1.opt;
-  const qV = atLam(Float64Array.from(o.Qabs, (v, i) => v + o.Qsca[i]), KEY_UM.V);
-  const sV = atLam(o.Qsca, KEY_UM.V);
+  const qV = atLam(G1.LL, Float64Array.from(o.Qabs, (v, i) => v + o.Qsca[i]), KEY_UM.V);
+  const sV = atLam(G1.LL, o.Qsca, KEY_UM.V);
   const rows = [
-    ["Atoms in the grain", numHTML(g.H.N, 2), "N, from the bulk density (MgFeSiO4 at 3.5 g/cm3; graphite at 2.24 g/cm3)"],
+    ["Atoms in the grain", S.mat === "pah" ? numHTML(g.H.NC, 3) + " C + " + numHTML(g.H.NH, 2) + " H" : numHTML(g.H.N, 2),
+     S.mat === "pah" ? "N_C = 460 (a / 1 nm)^3, with H/C from Draine & Li (2007)" : "N, from the bulk density (MgFeSiO4 at 3.5 g/cm3; graphite at 2.24 g/cm3)"],
     ["<i>Q</i><sub>ext</sub> at 0.55 µm", numHTML(qV, 3), "extinction efficiency in the V band"],
     ["Albedo at 0.55 µm", (sV / qV).toFixed(3), "fraction of the extinction in the V band that is scattering"],
     ["Equilibrium <i>T</i><sub>eq</sub>", tHTML(g.Teq), "the temperature at which emission balances absorption"],
-    ["Middle 90% of <i>T</i>", G1.r.stochastic ? tHTML(G1.pct[0]) + " – " + tHTML(G1.pct[1]) : "steady",
-      "5th to 95th percentile of the temperature distribution"],
+    ["Emits 90% of its energy at", G1.r.stochastic ? tHTML(G1.pct[0]) + " – " + tHTML(G1.pct[1]) : "<i>T</i><sub>eq</sub>",
+      "the temperatures between which the middle 90% of the emitted power is radiated"],
+    ...(G1.r.ground > 1e-3 ? [["Time in the ground state", (100 * G1.r.ground).toFixed(G1.r.ground > 0.995 ? 2 : 1) + "%",
+      "fraction of the time with less vibrational energy than the lowest mode, between photon absorptions"]] : []),
     ["Absorbed power", numHTML(g.Pabs, 3) + " erg s<sup>−1</sup>", "per grain; equal to the emitted power"],
     ["Starlight photon absorbed every", durHTML(1 / G1.Rph), "the mean interval between absorptions of starlight photons"],
     ["Mean photon energy absorbed", numHTML(G1.hnu / P.EV, 3) + " eV", "absorbed starlight power divided by the photon absorption rate"],
@@ -661,23 +713,31 @@ function readGrain() {
     ["Radiative cooling time", durHTML(G1.Eeq / g.Pabs), "time to radiate the thermal energy at T_eq: E(T_eq) / P_abs. Compare with the photon interval."],
     ["<i>T</i> after one such photon", tHTML(G1.Tjump), "the temperature reached by adding the mean photon energy to E(T_eq)"],
   ];
-  $("readG").innerHTML = rows.map((r, k) =>
-    `<div class="rd${k === 3 || k === 5 ? " gap" : ""}" title="${r[2]}"><span>${r[0]}</span><b>${r[1]}</b></div>`).join("");
+  const gaps = new Set(["Equilibrium <i>T</i><sub>eq</sub>", "Absorbed power"]);
+  $("readG").innerHTML = rows.map(r =>
+    `<div class="rd${gaps.has(r[0]) ? " gap" : ""}" title="${r[2]}"><span>${r[0]}</span><b>${r[1]}</b></div>`).join("");
 }
 
 // ================================================================== distribution panels
-const LXA = [Math.log10(0.002), Math.log10(5)];
+const LXA = [Math.log10(3e-4), Math.log10(5)];
 let AS = null, AX = null, AA = null, AI = null;
 
 function sizeCurve(m) {
-  const d = distParams(m), A = P.powerlawA(m, d.q, d.amin, d.amax, d.abund);
-  const n = 160, us = [], vs = [];
-  const l0 = Math.log10(d.amin), l1 = Math.log10(d.amax);
+  const d = distParams(m), n = 160, us = [], vs = [];
+  let l0, l1, adnda;          // a dn/da = dn/dln a, per H
+  if (m === "pah") {
+    const n0 = P.lognormalWeights(d.a0, d.sigma, d.abund).n0;
+    l0 = Math.log10(P.PAH_AMIN); l1 = Math.log10(P.pahAmax(d.a0, d.sigma));
+    adnda = a => n0 * Math.exp(-0.5 * Math.pow(Math.log(a / d.a0) / d.sigma, 2));
+  } else {
+    const A = P.powerlawA(m, d.q, d.amin, d.amax, d.abund);
+    l0 = Math.log10(d.amin); l1 = Math.log10(d.amax);
+    adnda = a => A * Math.pow(a, 1 - d.q);
+  }
   for (let k = 0; k < n; k++) {
     const l = l0 + (l1 - l0) * k / (n - 1), a = Math.pow(10, l);
-    const dn = A * Math.pow(a, -d.q);                          // per um per H
-    const per = S.sd === "mass" ? P.grainMass(m, a) : Math.PI * Math.pow(a * P.UM, 2);
-    us.push(l); vs.push(LN10 * a * dn * per);
+    const per = S.sd === "mass" ? (m === "pah" ? P.pahMass(a) : P.grainMass(m, a)) : Math.PI * Math.pow(a * P.UM, 2);
+    us.push(l); vs.push(LN10 * adnda(a) * per);
   }
   return { us, vs };
 }
@@ -700,9 +760,9 @@ function drawS() {
     // drop to the axis at both ends: the distribution is cut off there
     const us = [c.us[0], ...c.us, c.us[c.us.length - 1]], vs = [A.y0 - 1, ...ys, A.y0 - 1];
     fillTo(ctx, A, c.us, ys, A.y0, C[m], 0.08);
-    curve(ctx, A, us, vs, C[m], 2.2, m === "gra" ? [7, 4] : []);
+    curve(ctx, A, us, vs, C[m], 2.2, SDASH[m]);
   }
-  legend($("lgS"), onMats().map(m => ({ color: C[m], da: m === "gra" ? [7, 4] : [], label: MATNAME[m] })));
+  legend($("lgS"), onMats().map(m => ({ color: C[m], da: SDASH[m], label: MATNAME[m] })));
 }
 function hoverS(ev) {
   const cv = $("cvS"), [x] = local(cv, ev), A = AS;
@@ -718,7 +778,7 @@ function hoverS(ev) {
       const k = clamp(Math.round((l - c.us[0]) / (c.us[1] - c.us[0])), 0, c.us.length - 1);
       v = c.vs[k];
     }
-    rows.push({ k: MATNAME[m], v: v > 0 ? numHTML(v, 3) + (S.sd === "mass" ? " g" : " cm<sup>2</sup>") : "none", sw: C[m], da: m === "gra" ? [7, 4] : [] });
+    rows.push({ k: MATNAME[m], v: v > 0 ? numHTML(v, 3) + (S.sd === "mass" ? " g" : " cm<sup>2</sup>") : "none", sw: C[m], da: SDASH[m] });
   }
   showTip(ev, rows);
 }
@@ -727,19 +787,20 @@ const XI = [0, 11];                     // inverse wavelength axis (um^-1)
 const XL = [Math.log10(0.09), 0];                 // wavelength axis, 0.09-1 um (log)
 const lamAxis = () => S.xa === "lam";
 const xRange = () => (lamAxis() ? XL : XI);
-const xOf = e => (lamAxis() ? LAMLOG : e.inv);
+const xOf = e => (lamAxis() ? LLF : e.inv);
 const SIZELAB = ["<i>a</i> < 0.01 µm", "0.01–0.1 µm", "> 0.1 µm"];
-const MATDASH = { sil: [2, 3], gra: [7, 4] };
+const MATDASH = { sil: [2, 3], gra: [7, 4], pah: [12, 3, 3, 3] };
+const SDASH = { sil: [], gra: [7, 4], pah: [12, 3, 3, 3] };     // the size-distribution panel
 const SIZEDASH = [[2, 3], [7, 4], [12, 3, 3, 3]];        // dotted, dashed, dash-dot
 const compLegend = c => ({ color: c.color, da: c.dash, label: c.label });
 // the reference curve: a broad light band behind the model curves
 const REF = { color: "#b8b0a3", width: 5 };
 function extArrays() {
   const mag = 2.5 / Math.LN10;
-  const AV = mag * atLam(DO.extT, KEY_UM.V);
+  const AV = mag * atLam(LLF, DO.extT, KEY_UM.V);
   const norm = S.xn === "H" ? 1e-21 : AV;
   const f = v => mag * v / norm;
-  const inv = Array.from(P.LAM, l => 1 / l);
+  const inv = Array.from(P.LAMF, l => 1 / l);
   const tot = Array.from(DO.extT, f);
   const alb = Array.from(DO.scaT, (v, i) => v / DO.extT[i]);
   const comps = S.xs === "mat"
@@ -801,12 +862,12 @@ function hoverX(ev, cv, A) {
   const [x] = local(cv, ev);
   if (!A || !AX || x < A.box.l || x > A.box.r) { if (HOV && HOV.grp === "x") { HOV = null; drawX(); drawA(); } hideTip(); return; }
   const e = AX.e;
-  const i = lamAxis() ? lamIndex(A.ux(x))
-                      : lamIndex(-Math.log10(clamp(A.ux(x), 1 / P.LAM[P.NL - 1], 1 / P.LAM[0])));
-  HOV = { grp: "x", u: lamAxis() ? LAMLOG[i] : e.inv[i] };
+  const i = lamAxis() ? nearestIndex(LLF, A.ux(x))
+                      : nearestIndex(LLF, -Math.log10(clamp(A.ux(x), 1 / P.LAMF[P.GF.n - 1], 1 / P.LAMF[0])));
+  HOV = { grp: "x", u: lamAxis() ? LLF[i] : e.inv[i] };
   drawX(); drawA();
   const unit = S.xn === "H" ? " × 10<sup>−21</sup>" : "";
-  const rows = [{ head: `λ = ${numHTML(P.LAM[i], 3)} µm &nbsp; (1/λ = ${numHTML(e.inv[i], 3)} µm<sup>−1</sup>)` },
+  const rows = [{ head: `λ = ${numHTML(P.LAMF[i], 3)} µm &nbsp; (1/λ = ${numHTML(e.inv[i], 3)} µm<sup>−1</sup>)` },
     { k: S.xn === "H" ? "<i>A</i><sub>λ</sub>/<i>N</i><sub>H</sub> (mag cm<sup>2</sup>)" : "<i>A</i><sub>λ</sub>/<i>A</i><sub>V</sub>", v: numHTML(e.tot[i], 3) + unit, sw: C.ink }];
   for (const c of e.comps) rows.push({ k: "&nbsp;&nbsp;" + c.label, v: numHTML(c.y[i], 3) + unit, sw: c.color, da: c.dash });
   if (isFinite(e.ref[i])) rows.push({ k: "Cardelli et al.", v: numHTML(e.ref[i], 3) + unit, sw: REF.color, w: REF.width });
@@ -826,7 +887,7 @@ function drawI() {
     ? DE.mats.map(m => ({ y: DE.em[m], color: C[m], dash: MATDASH[m], label: MATNAME[m], key: m }))
     : DE.bins.map((y, k) => ({ y, color: C.size[k], dash: SIZEDASH[k], label: SIZELAB[k], key: "b" + k })).filter(sr => sr.y.some(v => v > 0));
   let mx = 0;
-  for (let j = 0; j < P.NL; j++) if (P.LAM[j] >= 1) mx = Math.max(mx, DE.tot[j]);
+  for (let j = 0; j < P.GF.n; j++) if (P.LAMF[j] >= 1) mx = Math.max(mx, DE.tot[j]);
   const top = Math.ceil(Math.log10(mx) * 2 + 0.4) / 2;
   const A = axes(box, LXI[0], LXI[1], top - 6, top);
   AI = A; A.series = series;
@@ -837,17 +898,17 @@ function drawI() {
   xlabel(ctx, A, mk("Wavelength λ (µm)"));
   ylabel(ctx, A, mk("λ*I*_{λ} / *N*_{H} (erg s^{−1} sr^{−1} H^{−1})"), 58);
   if (HOV && HOV.grp === "i") vline(ctx, A, HOV.u, C.faint);
-  for (const s of series) curve(ctx, A, LAMLOG, Array.from(s.y, L10), s.color, 1.9, s.dash, alpha);
-  curve(ctx, A, LAMLOG, Array.from(DE.tot, L10), C.ink, 2.4, [], alpha);
+  for (const s of series) curve(ctx, A, LLF, Array.from(s.y, L10), s.color, 1.9, s.dash, alpha);
+  curve(ctx, A, LLF, Array.from(DE.tot, L10), C.ink, 2.4, [], alpha);
   legend($("lgI"), [{ color: C.ink, label: "total" }, ...series.map(s => ({ color: s.color, da: s.dash, label: s.label }))]);
 }
 function hoverI(ev) {
   const cv = $("cvI"), [x] = local(cv, ev), A = AI;
   if (!A || x < A.box.l || x > A.box.r) { if (HOV && HOV.grp === "i") { HOV = null; drawI(); } hideTip(); return; }
-  const i = lamIndex(A.ux(x));
-  HOV = { grp: "i", u: LAMLOG[i] };
+  const i = nearestIndex(LLF, A.ux(x));
+  HOV = { grp: "i", u: LLF[i] };
   drawI();
-  const rows = [{ head: `λ = ${numHTML(P.LAM[i], 3)} µm` }, { k: "total", v: numHTML(DE.tot[i], 3), sw: C.ink }];
+  const rows = [{ head: `λ = ${numHTML(P.LAMF[i], 3)} µm` }, { k: "total", v: numHTML(DE.tot[i], 3), sw: C.ink }];
   for (const s of A.series) rows.push({ k: s.label, v: numHTML(s.y[i], 3), sw: s.color, da: s.dash });
   rows.push({ head: '<span style="color:#6a6560">erg s<sup>−1</sup> sr<sup>−1</sup> H<sup>−1</sup></span>' });
   showTip(ev, rows);
@@ -857,22 +918,26 @@ function readDist() {
   const rows = [];
   if (!DO.mats.length) { $("readD").innerHTML = '<div class="rd"><span>No grains</span><b></b></div>'; return; }
   const mag = 2.5 / Math.LN10;
-  const AV = mag * atLam(DO.extT, KEY_UM.V), AB = mag * atLam(DO.extT, KEY_UM.B);
-  const alb = atLam(DO.scaT, KEY_UM.V) / atLam(DO.extT, KEY_UM.V);
+  const AV = mag * atLam(LLF, DO.extT, KEY_UM.V), AB = mag * atLam(LLF, DO.extT, KEY_UM.B);
+  const alb = atLam(LLF, DO.scaT, KEY_UM.V) / atLam(LLF, DO.extT, KEY_UM.V);
   const mass = DO.mats.reduce((s, m) => s + DO.mass[m], 0);
   rows.push(["<i>A</i><sub>V</sub> / <i>N</i><sub>H</sub>", numHTML(AV, 3) + " mag cm<sup>2</sup>", "visual extinction per H nucleus, at 0.55 um"]);
   rows.push(["<i>R</i><sub>V</sub> = <i>A</i><sub>V</sub> / <i>E</i>(<i>B</i>−<i>V</i>)", (AV / (AB - AV)).toFixed(2), "evaluated at 0.44 and 0.55 um"]);
   rows.push(["Albedo at 0.55 µm", alb.toFixed(3), "scattering / extinction in the V band"]);
   rows.push(["Dust mass / H mass", numHTML(mass / MH, 3), "grain mass per H nucleus divided by the mass of an H atom"]);
+  if (DO.mass.pah) rows.push(["PAH mass fraction <i>q</i><sub>PAH</sub>", (100 * DO.mass.pah / mass).toFixed(1) + "%",
+    "PAH mass as a fraction of the total dust mass; Draine & Li (2007) find 4.6% for the Milky Way"]);
   if (DE && !DE.stale) {
-    let pw = 0, pshort = 0, psmall = 0;
-    for (let j = 0; j < P.NL; j++) {
-      const wj = P.WL[j] / P.LAM[j];                 // d ln lambda weight
+    let pw = 0, pshort = 0, psmall = 0, pmir = 0;
+    for (let j = 0; j < P.GF.n; j++) {
+      const wj = P.GF.wl[j] / P.LAMF[j];             // d ln lambda weight
       pw += wj * DE.tot[j]; psmall += wj * DE.bins[0][j];
-      if (P.LAM[j] < 50) pshort += wj * DE.tot[j];
+      if (P.LAMF[j] < 50) pshort += wj * DE.tot[j];
+      if (P.LAMF[j] >= 3 && P.LAMF[j] <= 20) pmir += wj * DE.tot[j];
     }
     rows.push(["Power absorbed", numHTML(DE.pabs, 3) + " erg s<sup>−1</sup>", "per H nucleus; equal to the power emitted, the integral of the infrared spectrum"]);
     rows.push(["IR power from <i>a</i> < 0.01 µm", (100 * psmall / pw).toFixed(1) + "%", "share of the emitted power from the smallest grains"]);
+    rows.push(["IR power at 3–20 µm", (100 * pmir / pw).toFixed(1) + "%", "share of the emitted power in the PAH band region"]);
     rows.push(["IR power at λ < 50 µm", (100 * pshort / pw).toFixed(1) + "%", "share of the emitted power shortward of 50 um"]);
   } else {
     rows.push(["Power absorbed", "…", ""]);
@@ -883,11 +948,12 @@ function readDist() {
 
 // ================================================================== controls
 function seg(ids, val, keys) { ids.forEach((id, k) => $(id).setAttribute("aria-pressed", String(keys[k] === val))); }
+function aaHTML(a, pah) { return a < (pah ? 0.01 : 0.001) ? (a * 1e4).toFixed(a < 0.001 ? 2 : 1) + " Å" : aHTML(a); }
 function buildDistControls() {
   for (const m of ["sil", "gra"]) {
     const el = $(m === "sil" ? "dSil" : "dGra"), key = m === "sil" ? "Si" : "C";
     el.innerHTML = `
-      <label class="mh"><input type="checkbox" id="${m}On"><span class="sw" style="border-top-color:${C[m]}${m === "gra" ? ";border-top-style:dashed" : ""}"></span>${MATNAME[m]}</label>
+      <label class="mh"><input type="checkbox" id="${m}On">${swatch({ color: C[m], da: MATDASH[m] })}${MATNAME[m]}</label>
       <div class="ctl" title="Slope of dn/da proportional to a^-q. MRN has q = 3.5: the number of grains rises steeply toward small sizes, the mass sits in the large grains for q &lt; 4."><label for="${m}Q"><span>Slope, <i>q</i></span><span class="val" id="${m}Qv"></span></label>
         <input type="range" id="${m}Q" min="${R.q[0]}" max="${R.q[1]}" step="0.05"></div>
       <div class="ctl" title="Smallest grain radius."><label for="${m}A0"><span>Smallest, <i>a</i><sub>min</sub></span><span class="val" id="${m}A0v"></span></label>
@@ -910,18 +976,37 @@ function buildDistControls() {
     });
     $(m + "X").addEventListener("input", ev => { S.dist[m].abund = +ev.target.value; changed("dist"); });
   }
+  $("dPah").innerHTML = `
+    <label class="mh"><input type="checkbox" id="pahOn">${swatch({ color: C.pah, da: MATDASH.pah })}PAHs</label>
+    <div class="ctl" title="Center of the log-normal: the radius where the number of PAHs per logarithmic interval of radius peaks. 4 A is 30 C atoms; 10 A is 460."><label for="pahA0"><span>Center, <i>a</i><sub>0</sub></span><span class="val" id="pahA0v"></span></label>
+      <input type="range" id="pahA0" min="${R.a0[0]}" max="${R.a0[1]}" step="0.005"></div>
+    <div class="ctl" title="Width of the log-normal in ln a. Draine &amp; Li (2007) use 0.4 for their smaller component and 0.55 for the larger."><label for="pahS"><span>Width, <i>σ</i></span><span class="val" id="pahSv"></span></label>
+      <input type="range" id="pahS" min="${R.sigma[0]}" max="${R.sigma[1]}" step="0.01"></div>
+    <div class="ctl" title="C atoms in PAHs per million H nuclei. Draine &amp; Li's (2007) Milky Way model puts 60 ppm in its two log-normal components."><label for="pahX"><span>C in PAHs (ppm of H)</span><span class="val" id="pahXv"></span></label>
+      <input type="range" id="pahX" min="${R.ab.pah[0]}" max="${R.ab.pah[1]}" step="1"></div>
+    <div class="ctl" title="Fraction of PAHs that are positively ionized. Ionization strengthens the 6-9 um C-C bands and weakens the 3.3 and 11.3 um C-H bands; the real fraction depends on the gas density and temperature through photoelectric charging and recombination."><label for="pahF"><span>Ionized fraction</span><span class="val" id="pahFv"></span></label>
+      <input type="range" id="pahF" min="0" max="1" step="0.05"></div>`;
+  $("pahOn").addEventListener("change", ev => { S.dist.pah.on = ev.target.checked; changed("dist"); });
+  $("pahA0").addEventListener("input", ev => { S.dist.pah.a0 = +ev.target.value; changed("dist"); });
+  $("pahS").addEventListener("input", ev => { S.dist.pah.sigma = +ev.target.value; changed("dist"); });
+  $("pahX").addEventListener("input", ev => { S.dist.pah.abund = +ev.target.value; changed("dist"); });
+  $("pahF").addEventListener("input", ev => { S.dist.pah.fion = +ev.target.value; changed("dist"); });
 }
 function syncControls() {
   document.body.className = "tab-" + S.tab;
   seg(["tGrain", "tDist"], S.tab, ["grain", "dist"]);
-  seg(["mSil", "mGra"], S.mat, ["sil", "gra"]);
+  seg(["mSil", "mGra", "mPah"], S.mat, ["sil", "gra", "pah"]);
+  seg(["chNeu", "chIon"], S.charge, ["neu", "ion"]);
+  $("chRow").hidden = S.mat !== "pah";
+  const ar = aRange(S.mat);
+  $("sA").min = ar[0]; $("sA").max = ar[1];
   seg(["sdMass", "sdArea"], S.sd, ["mass", "area"]);
   seg(["xH", "xV"], S.xn, ["H", "V"]);
   seg(["xsMat", "xsSize"], S.xs, ["mat", "size"]);
   seg(["xaInv", "xaLam"], S.xa, ["inv", "lam"]);
   seg(["spMat", "spSize"], S.sp, ["mat", "size"]);
   $("sU").value = S.U; $("vU").innerHTML = uHTML(S.U);
-  $("sA").value = S.a; $("vA").innerHTML = aHTML(Math.pow(10, S.a));
+  $("sA").value = S.a; $("vA").innerHTML = aaHTML(Math.pow(10, S.a), S.mat === "pah");
   $("eLog").checked = S.elog; $("pLin").checked = S.plin;
   for (const m of ["sil", "gra"]) {
     const d = S.dist[m];
@@ -932,9 +1017,17 @@ function syncControls() {
     $(m + "A1").value = d.amax; $(m + "A1v").innerHTML = aHTML(Math.pow(10, d.amax));
     $(m + "X").value = d.abund; $(m + "Xv").textContent = d.abund.toFixed(m === "sil" ? 1 : 0);
   }
-  const isMRN = ["sil", "gra"].every(m => { const d = S.dist[m], r = DEF.dist[m];
-    return d.on && Math.abs(d.q - r.q) < 1e-9 && Math.abs(d.amin - r.amin) < 1e-9 && Math.abs(d.amax - r.amax) < 1e-9 && Math.abs(d.abund - r.abund) < 1e-9; });
-  $("mrn").setAttribute("aria-pressed", String(isMRN));
+  const p = S.dist.pah;
+  $("pahOn").checked = p.on;
+  $("dPah").classList.toggle("off", !p.on);
+  $("pahA0").value = p.a0; $("pahA0v").innerHTML = aaHTML(Math.pow(10, p.a0));
+  $("pahS").value = p.sigma; $("pahSv").textContent = p.sigma.toFixed(2);
+  $("pahX").value = p.abund; $("pahXv").textContent = p.abund.toFixed(0);
+  $("pahF").value = p.fion; $("pahFv").textContent = p.fion.toFixed(2);
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  const norm = d => { const c = clone(d); if (!c.pah.on) c.pah = { on: false }; return c; };
+  $("mrn").setAttribute("aria-pressed", String(same(norm(S.dist), norm(presetDist(false)))));
+  $("mrnp").setAttribute("aria-pressed", String(same(norm(S.dist), norm(presetDist(true)))));
 }
 
 // ================================================================== redraw orchestration
@@ -970,7 +1063,8 @@ function saveHash() {
   clearTimeout(hashTimer);
   hashTimer = setTimeout(() => {
     const d = m => { const x = S.dist[m]; return [x.on ? 1 : 0, x.q.toFixed(2), x.amin.toFixed(3), x.amax.toFixed(3), x.abund].join(","); };
-    const h = `t=${S.tab}&m=${S.mat}&a=${S.a.toFixed(3)}&U=${S.U.toFixed(2)}&s=${d("sil")}&g=${d("gra")}` +
+    const p = S.dist.pah, ph = [p.on ? 1 : 0, p.a0.toFixed(3), p.sigma.toFixed(2), p.abund, p.fion.toFixed(2)].join(",");
+    const h = `t=${S.tab}&m=${S.mat}&ch=${S.charge}&a=${S.a.toFixed(3)}&U=${S.U.toFixed(2)}&s=${d("sil")}&g=${d("gra")}&p=${ph}` +
               `&el=${S.elog ? 1 : 0}&pl=${S.plin ? 1 : 0}&sd=${S.sd}&xn=${S.xn}&xs=${S.xs}&xa=${S.xa}&sp=${S.sp}`;
     try { history.replaceState(null, "", "#" + h); } catch (e) { /* sandboxed */ }
   }, 250);
@@ -980,8 +1074,13 @@ function readHash() {
   try { q = new URLSearchParams(location.hash.slice(1)); } catch (e) { return; }
   const num = (k, lo, hi) => { const v = parseFloat(q.get(k)); return isFinite(v) ? clamp(v, lo, hi) : null; };
   if (q.get("t") === "dist" || q.get("t") === "grain") S.tab = q.get("t");
-  if (q.get("m") === "sil" || q.get("m") === "gra") S.mat = q.get("m");
-  const a = num("a", R.a[0], R.a[1]); if (a !== null) S.a = a;
+  if (MATS3.includes(q.get("m"))) S.mat = q.get("m");
+  if (q.get("ch") === "ion") S.charge = "ion";
+  const a = num("a", aRange(S.mat)[0], aRange(S.mat)[1]); if (a !== null) S.a = a;
+  const pv = (q.get("p") || "").split(",").map(parseFloat);
+  if (pv.length === 5 && pv.every(isFinite))
+    S.dist.pah = { on: pv[0] > 0, a0: clamp(pv[1], R.a0[0], R.a0[1]), sigma: clamp(pv[2], R.sigma[0], R.sigma[1]),
+                   abund: clamp(pv[3], R.ab.pah[0], R.ab.pah[1]), fion: clamp(pv[4], 0, 1) };
   const u = num("U", R.U[0], R.U[1]); if (u !== null) S.U = u;
   for (const [k, m] of [["s", "sil"], ["g", "gra"]]) {
     const v = (q.get(k) || "").split(",").map(parseFloat);
@@ -1003,11 +1102,22 @@ function wire() {
   $("tGrain").addEventListener("click", () => { S.tab = "grain"; changed("all"); });
   $("tDist").addEventListener("click", () => { S.tab = "dist"; changed("all"); });
   $("reset").addEventListener("click", () => { S = clone(DEF); HOV = null; changed("all"); });
-  $("mrn").addEventListener("click", () => { S.dist = clone(DEF.dist); changed("dist"); });
+  $("mrn").addEventListener("click", () => { S.dist = presetDist(false); changed("dist"); });
+  $("mrnp").addEventListener("click", () => { S.dist = presetDist(true); changed("dist"); });
   $("sU").addEventListener("input", ev => { S.U = +ev.target.value; changed("U"); });
   $("sA").addEventListener("input", ev => { S.a = +ev.target.value; changed("grain"); });
-  $("mSil").addEventListener("click", () => { S.mat = "sil"; changed("grain"); });
-  $("mGra").addEventListener("click", () => { S.mat = "gra"; changed("grain"); });
+  // switching between the bulk materials and PAHs moves the radius into the new range
+  const setMat = m => {
+    const ar = aRange(m);
+    if (m === "pah" && S.mat !== "pah") S.a = Math.log10(5e-4);          // a 5 A molecule
+    else if (S.a < ar[0] || S.a > ar[1]) S.a = -1;
+    S.mat = m; changed("grain");
+  };
+  $("mSil").addEventListener("click", () => setMat("sil"));
+  $("mGra").addEventListener("click", () => setMat("gra"));
+  $("mPah").addEventListener("click", () => setMat("pah"));
+  $("chNeu").addEventListener("click", () => { S.charge = "neu"; changed("grain"); });
+  $("chIon").addEventListener("click", () => { S.charge = "ion"; changed("grain"); });
   $("eLog").addEventListener("change", ev => { S.elog = ev.target.checked; changed("view"); });
   $("pLin").addEventListener("change", ev => { S.plin = ev.target.checked; changed("view"); });
   $("sdMass").addEventListener("click", () => { S.sd = "mass"; changed("view"); });
@@ -1045,7 +1155,11 @@ async function start() {
   const [meta, buf] = await Promise.all([fetch("data/dust.json").then(r => r.json()),
                                          fetch("data/dust.bin").then(r => r.arrayBuffer())]);
   P.init(meta, buf);
-  LAMLOG = Float64Array.from(P.LAM, l => Math.log10(l));
+  LLC = Float64Array.from(P.LAM, l => Math.log10(l));
+  LLF = Float64Array.from(P.LAMF, l => Math.log10(l));
+  let i1 = 0;
+  while (i1 < P.PAH_GRID.length - 1 && P.PAH_GRID[i1 + 1] <= Math.pow(10, R.aPah[1]) * 1.0001) i1++;
+  T_NODES_PAH = [0, i1];
   DEF = defaults();
   S = clone(DEF);
   readHash();
