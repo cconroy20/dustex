@@ -530,18 +530,22 @@ Phys.SIZE_BINS = SIZE_BINS;
 function distOptics(mat, p) {
   const { a, w } = powerlawWeights(mat, p.q, p.amin, p.amax, p.abund);
   const ext = new Float64Array(NL), sca = new Float64Array(NL), T = QT[mat];
+  const extB = SIZE_BINS.map(() => new Float64Array(NL)), scaB = SIZE_BINS.map(() => new Float64Array(NL));
   let mass = 0;
   for (let k = 0; k < a.length; k++) {
     const [i, t] = aIndex(a[k]);
     const geo = w[k] * Math.PI * Math.pow(a[k] * UM, 2);
+    const b = SIZE_BINS.findIndex(r => a[k] >= r[0] && a[k] < r[1]);
+    const eb = extB[b], sb = scaB[b];
     for (let j = 0; j < NL; j++) {
       const qa = (1 - t) * T[i * NL + j] + t * T[(i + 1) * NL + j];
       const qs = (1 - t) * T[(NA + i) * NL + j] + t * T[(NA + i + 1) * NL + j];
       ext[j] += geo * (qa + qs); sca[j] += geo * qs;
+      eb[j] += geo * (qa + qs); sb[j] += geo * qs;
     }
     mass += w[k] * grainMass(mat, a[k]);
   }
-  return { ext, sca, mass, a, w };
+  return { ext, sca, mass, a, w, extB, scaB };
 }
 Phys.distOptics = distOptics;
 

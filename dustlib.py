@@ -598,9 +598,11 @@ def distribution(params, U, tables, emis_cache=None):
     params: {mat: dict(q=, amin=, amax=, abund=)} for the materials that are switched on.
     tables: {mat: optics_table(mat)} on A_GRID.
     Returns per-H quantities on LAM: 'ext', 'sca' (cm^2/H), 'em' (lambda I_lambda / N_H,
-    erg s^-1 sr^-1 H^-1), each a dict over materials, plus 'em_size' (same, split by
-    SIZE_BINS), 'mass' (g/H) and 'pabs' (erg s^-1 H^-1)."""
-    out = dict(ext={}, sca={}, em={}, mass={}, pabs={}, em_size=[np.zeros(NLAM) for _ in SIZE_BINS])
+    erg s^-1 sr^-1 H^-1), each a dict over materials, plus 'ext_size', 'sca_size' and
+    'em_size' (summed over materials, split by SIZE_BINS), 'mass' (g/H) and 'pabs'
+    (erg s^-1 H^-1)."""
+    out = dict(ext={}, sca={}, em={}, mass={}, pabs={}, em_size=[np.zeros(NLAM) for _ in SIZE_BINS],
+               ext_size=[np.zeros(NLAM) for _ in SIZE_BINS], sca_size=[np.zeros(NLAM) for _ in SIZE_BINS])
     for mat, p in params.items():
         ax, w = powerlaw_weights(mat, p["q"], p["amin"], p["amax"], p["abund"])
         Q = interp_in_a(np.moveaxis(tables[mat], 0, 1), ax)          # (n, 3, NLAM)
@@ -608,6 +610,10 @@ def distribution(params, U, tables, emis_cache=None):
         out["ext"][mat] = np.sum((w * geo)[:, None] * (Q[:, 0] + Q[:, 1]), axis=0)
         out["sca"][mat] = np.sum((w * geo)[:, None] * Q[:, 1], axis=0)
         out["mass"][mat] = np.sum(w * grain_mass(mat, ax))
+        for k, (lo, hi) in enumerate(SIZE_BINS):
+            sel = ((ax >= lo) & (ax < hi)) * w * geo
+            out["ext_size"][k] += np.sum(sel[:, None] * (Q[:, 0] + Q[:, 1]), axis=0)
+            out["sca_size"][k] += np.sum(sel[:, None] * Q[:, 1], axis=0)
         # emission per grain at the table nodes that bracket [amin, amax], then
         # interpolated in ln a as (power per grain) / a^3
         i0 = max(0, np.searchsorted(A_GRID, p["amin"]) - 1)

@@ -194,6 +194,9 @@ pab = sum(r["pabs"].values())
 check("size distribution: emitted = absorbed power per H (MRN, U = 1)", abs(pem / pab - 1) < 1e-3, "%.5f" % (pem / pab))
 check("MRN (DL84 normalization) locks up 34 ppm Si and 298 ppm C",
       abs(D.mrn_abundance("sil") - 34.16) < 0.05 and abs(D.mrn_abundance("gra") - 297.9) < 0.3)
+ext_tot = sum(r["ext"].values())
+check("extinction and scattering split by size sum to the totals",
+      np.max(abs(sum(r["ext_size"]) / ext_tot - 1)) < 1e-12 and np.max(abs(sum(r["sca_size"]) / sum(r["sca"].values()) - 1)) < 1e-12)
 bins = sum(bands_of(e) for e in r["em_size"]).sum()
 check("emission split by size sums to the total", abs(bins / bands_of(sum(r["em"].values())).sum() - 1) < 1e-9)
 
@@ -238,9 +241,13 @@ if js is not None:
                 b1, b2 = bands_of(rp["em"][mat]), bands_of(np.array(j["em"][mat]))
                 f = b1 / b1.sum()
                 w_d = max(w_d, np.max(abs(b2 / b1 - 1)[f > 1e-3]))
+            for k in range(len(D.SIZE_BINS)):
+                if rp["ext_size"][k].max() > 0:
+                    w_d = max(w_d, np.max(abs(np.array(j["extB"][k]) / rp["ext_size"][k] - 1)),
+                              np.max(abs(np.array(j["scaB"][k]) / rp["sca_size"][k] - 1)))
     check("port: Mie optics (2 materials x 2 radii, all wavelengths)", w_opt < 1e-9, "worst %.1e" % w_opt)
     check("port: single grains (T_eq, P_abs, band emission; 7 cases)", w_g < 1e-4, "worst %.1e" % w_g)
-    check("port: size distribution (extinction, scattering, mass, emission)", w_d < 1e-4, "worst %.1e" % w_d)
+    check("port: size distribution (extinction and scattering by material and size, mass, emission)", w_d < 1e-4, "worst %.1e" % w_d)
 
 n = sum(ok for _, ok in results)
 print("\n%d passed, %d failed" % (n, len(results) - n))

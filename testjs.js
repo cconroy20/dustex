@@ -20,7 +20,7 @@ const out = cases.map(c => {
   }
   if (c.kind === "dist") {
     const res = { ext: {}, sca: {}, em: {}, mass: {}, pabs: {}, bins: null, ms: 0 };
-    let bins = null;
+    let bins = null, extB = null, scaB = null;
     for (const mat of Object.keys(c.params)) {
       const p = c.params[mat];
       const o = Phys.distOptics(mat, p);
@@ -28,12 +28,14 @@ const out = cases.map(c => {
       const nodes = [];
       for (let i = i0; i <= i1; i++) nodes[i] = Phys.nodeEmission(mat, i, c.U);
       const e = Phys.distEmission(mat, p, nodes);
+      if (!extB) { extB = o.extB.map(x => arr(x)); scaB = o.scaB.map(x => arr(x)); }
+      else { o.extB.forEach((x, k) => x.forEach((v, j) => { extB[k][j] += v; })); o.scaB.forEach((x, k) => x.forEach((v, j) => { scaB[k][j] += v; })); }
       res.ext[mat] = arr(o.ext); res.sca[mat] = arr(o.sca); res.mass[mat] = o.mass;
       res.em[mat] = arr(e.em); res.pabs[mat] = e.pabs;
       if (!bins) bins = e.bins.map(x => arr(x));
       else e.bins.forEach((x, k) => x.forEach((v, j) => { bins[k][j] += v; }));
     }
-    res.bins = bins; res.ms = Date.now() - t0;
+    res.bins = bins; res.extB = extB; res.scaB = scaB; res.ms = Date.now() - t0;
     return res;
   }
   throw new Error("unknown case " + c.kind);

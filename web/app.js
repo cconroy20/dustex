@@ -38,7 +38,7 @@ function mrnDist() {
 }
 function defaults() {
   return { tab: "grain", U: 0, mat: "sil", a: -1, dist: mrnDist(),
-           elog: false, plin: false, sd: "mass", xn: "H", sp: "mat" };
+           elog: false, plin: false, sd: "mass", xn: "H", xs: "mat", sp: "mat" };
 }
 const clone = o => JSON.parse(JSON.stringify(o));
 
@@ -366,10 +366,14 @@ function computeDistOptics() {
   const out = { mats: onMats(), ext: {}, sca: {}, mass: {} };
   const n = P.NL;
   out.extT = new Float64Array(n); out.scaT = new Float64Array(n);
+  out.extB = P.SIZE_BINS.map(() => new Float64Array(n)); out.scaB = P.SIZE_BINS.map(() => new Float64Array(n));
   for (const m of out.mats) {
     const o = P.distOptics(m, distParams(m));
     out.ext[m] = o.ext; out.sca[m] = o.sca; out.mass[m] = o.mass;
-    for (let j = 0; j < n; j++) { out.extT[j] += o.ext[j]; out.scaT[j] += o.sca[j]; }
+    for (let j = 0; j < n; j++) {
+      out.extT[j] += o.ext[j]; out.scaT[j] += o.sca[j];
+      for (let k = 0; k < out.extB.length; k++) { out.extB[k][j] += o.extB[k][j]; out.scaB[k][j] += o.scaB[k][j]; }
+    }
   }
   DO = out;
 }
@@ -408,7 +412,7 @@ function showTip(ev, rows) {
 function hideTip() { tip.hidden = true; }
 
 // ================================================================== single-grain panels
-const LX = [Math.log10(0.09), 1];               // wavelength axis, efficiencies (to 10 um)
+const LX = [Math.log10(0.09), Math.log10(20)];  // wavelength axis, efficiencies (to 20 um)
 const LXE = [Math.log10(0.09), Math.log10(3000)];
 let AQ = null, AW = null, AE = null, AP = null, AT = null;
 
@@ -715,18 +719,26 @@ function hoverS(ev) {
 }
 
 const XI = [0, 11];                     // inverse wavelength axis (um^-1)
+const SIZELAB = ["<i>a</i> < 0.01 µm", "0.01–0.1 µm", "> 0.1 µm"];
+// legend entry for a component: silicate dotted, graphite dashed, size bins solid
+const compLegend = c => ({ color: c.color, dash: c.key === "gra", dot: c.key === "sil", label: c.label });
 function extArrays() {
-  const n = P.NL, mag = 2.5 / Math.LN10;
+  const mag = 2.5 / Math.LN10;
   const AV = mag * atLam(DO.extT, KEY_UM.V);
   const norm = S.xn === "H" ? 1e-21 : AV;
   const f = v => mag * v / norm;
   const inv = Array.from(P.LAM, l => 1 / l);
-  const tot = Array.from(DO.extT, f), per = {};
-  for (const m of DO.mats) per[m] = Array.from(DO.ext[m], f);
-  const alb = Array.from(DO.scaT, (v, i) => v / DO.extT[i]), albm = {};
-  for (const m of DO.mats) albm[m] = Array.from(DO.sca[m], (v, i) => v / DO.ext[m][i]);
-  void n;
-  return { inv, tot, per, alb, albm, AV };
+  const tot = Array.from(DO.extT, f);
+  const alb = Array.from(DO.scaT, (v, i) => v / DO.extT[i]);
+  const comps = S.xs === "mat"
+    ? DO.mats.map(m => ({ key: m, label: MATNAME[m], color: C[m], dash: m === "gra" ? [7, 4] : [2, 3], ext: DO.ext[m], sca: DO.sca[m] }))
+    : DO.extB.map((e, k) => ({ key: "b" + k, label: SIZELAB[k], color: C.size[k], dash: [], ext: e, sca: DO.scaB[k] }))
+        .filter(c => c.ext.some(v => v > 0));
+  for (const c of comps) {
+    c.y = Array.from(c.ext, f);
+    c.alb = Array.from(c.sca, (v, i) => (c.ext[i] > 0 ? v / c.ext[i] : NaN));
+  }
+  return { inv, tot, alb, comps, AV };
 }
 function drawX() {
   const { ctx, w, h } = fit($("cvX"));
@@ -741,10 +753,9 @@ function drawX() {
   linTicks(ctx, A, "y", niceStep(A.y1, 5));
   ylabel(ctx, A, S.xn === "H" ? mk("*A*_{λ} / *N*_{H} (10^{−21} mag cm^{2})") : mk("*A*_{λ} / *A*_{V}"));
   if (HOV && HOV.grp === "x") vline(ctx, A, HOV.u, C.faint);
-  for (const m of DO.mats) curve(ctx, A, e.inv, e.per[m], C[m], 1.8, m === "gra" ? [7, 4] : [2, 3]);
+  for (const c of e.comps) curve(ctx, A, e.inv, c.y, c.color, 1.8, c.dash);
   curve(ctx, A, e.inv, e.tot, C.ink, 2.4);
-  legend($("lgX"), [{ color: C.ink, label: "total" },
-    ...DO.mats.map(m => ({ color: C[m], dash: m === "gra", dot: m === "sil", label: MATNAME[m] }))]);
+  legend($("lgX"), [{ color: C.ink, label: "total" }, ...e.comps.map(compLegend)]);
 }
 function drawA() {
   const { ctx, w, h } = fit($("cvA"));
@@ -758,7 +769,7 @@ function drawA() {
   if (!DO.mats.length) return;
   const e = AX ? AX.e : extArrays();
   if (HOV && HOV.grp === "x") vline(ctx, A, HOV.u, C.faint);
-  for (const m of DO.mats) curve(ctx, A, e.inv, e.albm[m], C[m], 1.6, m === "gra" ? [7, 4] : [2, 3]);
+  for (const c of e.comps) curve(ctx, A, e.inv, c.alb, c.color, 1.6, c.dash);
   curve(ctx, A, e.inv, e.alb, C.ink, 2.2);
 }
 function hoverX(ev, cv, A) {
@@ -771,8 +782,9 @@ function hoverX(ev, cv, A) {
   const unit = S.xn === "H" ? " × 10<sup>−21</sup>" : "";
   const rows = [{ head: `λ = ${numHTML(P.LAM[i], 3)} µm &nbsp; (1/λ = ${numHTML(e.inv[i], 3)} µm<sup>−1</sup>)` },
     { k: S.xn === "H" ? "<i>A</i><sub>λ</sub>/<i>N</i><sub>H</sub> (mag cm<sup>2</sup>)" : "<i>A</i><sub>λ</sub>/<i>A</i><sub>V</sub>", v: numHTML(e.tot[i], 3) + unit, sw: C.ink }];
-  for (const m of DO.mats) rows.push({ k: "&nbsp;&nbsp;" + MATNAME[m], v: numHTML(e.per[m][i], 3) + unit, sw: C[m], dash: m === "gra" });
+  for (const c of e.comps) rows.push({ k: "&nbsp;&nbsp;" + c.label, v: numHTML(c.y[i], 3) + unit, sw: c.color, dash: c.key === "gra" });
   rows.push({ k: "albedo", v: e.alb[i].toFixed(3), sw: C.ink });
+  for (const c of e.comps) if (isFinite(c.alb[i])) rows.push({ k: "&nbsp;&nbsp;" + c.label, v: c.alb[i].toFixed(3), sw: c.color, dash: c.key === "gra" });
   showTip(ev, rows);
 }
 
@@ -785,7 +797,7 @@ function drawI() {
   }
   const series = S.sp === "mat"
     ? DE.mats.map(m => ({ y: DE.em[m], color: C[m], dash: m === "gra" ? [7, 4] : [2, 3], label: MATNAME[m], key: m }))
-    : DE.bins.map((y, k) => ({ y, color: C.size[k], dash: [], label: ["<i>a</i> < 0.01 µm", "0.01–0.1 µm", "> 0.1 µm"][k], key: "b" + k }));
+    : DE.bins.map((y, k) => ({ y, color: C.size[k], dash: [], label: SIZELAB[k], key: "b" + k })).filter(sr => sr.y.some(v => v > 0));
   let mx = 0;
   for (let j = 0; j < P.NL; j++) if (P.LAM[j] >= 1) mx = Math.max(mx, DE.tot[j]);
   const top = Math.ceil(Math.log10(mx) * 2 + 0.4) / 2;
@@ -878,6 +890,7 @@ function syncControls() {
   seg(["mSil", "mGra"], S.mat, ["sil", "gra"]);
   seg(["sdMass", "sdArea"], S.sd, ["mass", "area"]);
   seg(["xH", "xV"], S.xn, ["H", "V"]);
+  seg(["xsMat", "xsSize"], S.xs, ["mat", "size"]);
   seg(["spMat", "spSize"], S.sp, ["mat", "size"]);
   $("sU").value = S.U; $("vU").innerHTML = uHTML(S.U);
   $("sA").value = S.a; $("vA").innerHTML = aHTML(Math.pow(10, S.a));
@@ -930,7 +943,7 @@ function saveHash() {
   hashTimer = setTimeout(() => {
     const d = m => { const x = S.dist[m]; return [x.on ? 1 : 0, x.q.toFixed(2), x.amin.toFixed(3), x.amax.toFixed(3), x.abund].join(","); };
     const h = `t=${S.tab}&m=${S.mat}&a=${S.a.toFixed(3)}&U=${S.U.toFixed(2)}&s=${d("sil")}&g=${d("gra")}` +
-              `&el=${S.elog ? 1 : 0}&pl=${S.plin ? 1 : 0}&sd=${S.sd}&xn=${S.xn}&sp=${S.sp}`;
+              `&el=${S.elog ? 1 : 0}&pl=${S.plin ? 1 : 0}&sd=${S.sd}&xn=${S.xn}&xs=${S.xs}&sp=${S.sp}`;
     try { history.replaceState(null, "", "#" + h); } catch (e) { /* sandboxed */ }
   }, 250);
 }
@@ -952,6 +965,7 @@ function readHash() {
   S.elog = q.get("el") === "1"; S.plin = q.get("pl") === "1";
   if (q.get("sd") === "area") S.sd = "area";
   if (q.get("xn") === "V") S.xn = "V";
+  if (q.get("xs") === "size") S.xs = "size";
   if (q.get("sp") === "size") S.sp = "size";
 }
 
@@ -971,6 +985,8 @@ function wire() {
   $("sdArea").addEventListener("click", () => { S.sd = "area"; changed("view"); });
   $("xH").addEventListener("click", () => { S.xn = "H"; changed("view"); });
   $("xV").addEventListener("click", () => { S.xn = "V"; changed("view"); });
+  $("xsMat").addEventListener("click", () => { S.xs = "mat"; changed("view"); });
+  $("xsSize").addEventListener("click", () => { S.xs = "size"; changed("view"); });
   $("spMat").addEventListener("click", () => { S.sp = "mat"; changed("view"); });
   $("spSize").addEventListener("click", () => { S.sp = "size"; changed("view"); });
   buildDistControls();

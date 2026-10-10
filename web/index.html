@@ -100,7 +100,8 @@
 
     <section class="panel">
       <div class="ph"><h2 title="Extinction per H nucleus against inverse wavelength, the usual form of the interstellar extinction curve, and below it the albedo of the whole population. Grains of radius a extinguish most efficiently near 2 pi a / lambda ~ 1-3, so the small grains set the far-ultraviolet rise and the large ones the optical and infrared.">Extinction</h2>
-        <span class="seg sm"><button id="xH" type="button" title="A_lambda / N_H in units of 10^-21 mag cm^2">per H</button><button id="xV" type="button" title="A_lambda / A_V">÷ A<sub>V</sub></button></span></div>
+        <span class="seg sm"><button id="xH" type="button" title="A_lambda / N_H in units of 10^-21 mag cm^2">per H</button><button id="xV" type="button" title="A_lambda / A_V">per A<sub>V</sub></button></span>
+        <span class="seg sm"><button id="xsMat" type="button" title="Split the extinction and albedo by material">Materials</button><button id="xsSize" type="button" title="Split the extinction and albedo by grain radius: below 0.01 um, 0.01-0.1 um, and above 0.1 um, summed over both materials">Sizes</button></span></div>
       <canvas id="cvX" aria-label="Extinction curve"></canvas>
       <canvas id="cvA" aria-label="Albedo against inverse wavelength"></canvas>
       <div class="legend" id="lgX"></div>

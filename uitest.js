@@ -131,6 +131,11 @@ function check(name, ok, detail) {
   await setRange("#silQ", 3.0);
   await setRange("#graA1", Math.log10(1.0));
   await clickSel("#spSize"); await clickSel("#xV"); await clickSel("#sdArea");
+  await clickSel("#xsSize");
+  const lgx = await ev(`document.getElementById("lgX").textContent`);
+  check("extinction split by size: legend lists the size bins", /0\.01–0\.1/.test(lgx) && !/Silicate/.test(lgx), lgx);
+  const nx = await sweep("#cvX");
+  check("hover tooltip on the size-split extinction", nx >= 8, `${nx} distinct`);
   await setRange("#sU", 2);
   const t4 = await idle();
   check("distribution recomputes after U and slope changes", t4 >= 0, `${t4} ms`);

@@ -7,8 +7,8 @@ extinction, the albedo, the grain temperature and the infrared emission that res
   absorbed and emitted per gram (equal areas on a log-wavelength axis); the temperature distribution P(T);
   and temperature against radius, which shows where single photons start to matter.
 - **Size distribution**: power laws dn/da ∝ a^-q between a_min and a_max for silicate and graphite,
-  normalized by the Si or C atoms locked in grains; the extinction curve A_λ/N_H and albedo; the infrared
-  spectrum λI_λ/N_H split by material or by size; and summary numbers per H nucleus.
+  normalized by the Si or C atoms locked in grains; the extinction curve (per H or per A_V) and albedo, and
+  the infrared spectrum λI_λ/N_H, each split by material or by size; and summary numbers per H nucleus.
 
 The page runs the whole calculation in the browser, including the Mie series for the single grain and the
 stochastic heating of every size in the distribution; only the Mie efficiencies on the size grid are
@@ -69,7 +69,7 @@ precomputed. PAHs are left out on purpose.
 | `web/physics.js` | the browser port of dustlib (checked against it to ~1e-14) |
 | `web/app.js`, `web/index.html`, `web/style.css` | the page |
 | `exportweb.py` | writes `web/data/dust.json` + `dust.bin` (Q tables, dielectric functions, field, enthalpies) |
-| `validate.py` | 26 checks against the sources and of the port; `python3 validate.py` (~40 s) |
+| `validate.py` | 27 checks against the sources and of the port; `python3 validate.py` (~40 s) |
 | `testjs.js` | runs physics.js under node for validate.py |
 | `uitest.js` | drives the page in headless Chrome (sliders, tabs, hovers, clicks, hash, phone width) |
 | `fetch.sh` | downloads every primary source into `rawdata/` |
