@@ -408,7 +408,7 @@ function showTip(ev, rows) {
 function hideTip() { tip.hidden = true; }
 
 // ================================================================== single-grain panels
-const LX = [Math.log10(0.09), 3];               // wavelength axis, efficiencies
+const LX = [Math.log10(0.09), 1];               // wavelength axis, efficiencies (to 10 um)
 const LXE = [Math.log10(0.09), Math.log10(3000)];
 let AQ = null, AW = null, AE = null, AP = null, AT = null;
 
