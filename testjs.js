@@ -10,6 +10,7 @@ const arr = a => Array.from(a);
 const cases = JSON.parse(fs.readFileSync(process.argv[2]));
 const out = cases.map(c => {
   const t0 = Date.now();
+  if (c.kind === "ccm") return { y: c.x.map(x => Phys.ccm89(x, c.Rv)) };
   if (c.kind === "mie") return { q: Phys.mie(c.x, c.mr, c.mi) };
   if (c.kind === "optics") { const o = Phys.optics(c.mat, c.a); return { Qabs: arr(o.Qabs), Qsca: arr(o.Qsca), g: arr(o.g) }; }
   if (c.kind === "grain") {

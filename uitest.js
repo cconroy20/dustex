@@ -136,6 +136,11 @@ function check(name, ok, detail) {
   check("extinction split by size: legend lists the size bins", /0\.01–0\.1/.test(lgx) && !/Silicate/.test(lgx), lgx);
   const nx = await sweep("#cvX");
   check("hover tooltip on the size-split extinction", nx >= 8, `${nx} distinct`);
+  await clickSel("#xaLam");
+  const nl = await sweep("#cvX");
+  check("hover tooltip on the extinction against wavelength", nl >= 8, `${nl} distinct`);
+  await sleep(400);
+  check("hash records the wavelength axis", /xa=lam/.test(await ev("location.hash")), await ev("location.hash"));
   await setRange("#sU", 2);
   const t4 = await idle();
   check("distribution recomputes after U and slope changes", t4 >= 0, `${t4} ms`);

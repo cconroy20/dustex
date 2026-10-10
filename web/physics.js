@@ -623,6 +623,34 @@ function distEmission(mat, p, nodes) {
 }
 Phys.distEmission = distEmission;
 
+// ------------------------------------------------------------------ reference extinction curve
+// Cardelli, Clayton & Mathis (1989), Eqs. (1)-(5): A_lambda / A_V = a(x) + b(x)/R_V for
+// 0.3 <= x <= 10 um^-1 (NaN outside); per H scaled with N_H / E(B-V) = 5.8e21 cm^-2 mag^-1
+// (Bohlin, Savage & Drake 1978).  See dustlib.ccm89.
+Phys.NH_EBV = 5.8e21;
+function ccm89(x, Rv) {
+  let a, b;
+  if (x >= 0.3 && x < 1.1) { a = 0.574 * Math.pow(x, 1.61); b = -0.527 * Math.pow(x, 1.61); }
+  else if (x >= 1.1 && x < 3.3) {
+    const y = x - 1.82;
+    const pa = [1.0, 0.17699, -0.50447, -0.02427, 0.72085, 0.01979, -0.77530, 0.32999];
+    const pb = [0.0, 1.41338, 2.28305, 1.07233, -5.38434, -0.62251, 5.30260, -2.09002];
+    a = 0; b = 0;
+    for (let k = 7; k >= 0; k--) { a = a * y + pa[k]; b = b * y + pb[k]; }
+  } else if (x >= 3.3 && x <= 8) {
+    const fa = x >= 5.9 ? -0.04473 * Math.pow(x - 5.9, 2) - 0.009779 * Math.pow(x - 5.9, 3) : 0;
+    const fb = x >= 5.9 ? 0.2130 * Math.pow(x - 5.9, 2) + 0.1207 * Math.pow(x - 5.9, 3) : 0;
+    a = 1.752 - 0.316 * x - 0.104 / (Math.pow(x - 4.67, 2) + 0.341) + fa;
+    b = -3.090 + 1.825 * x + 1.206 / (Math.pow(x - 4.62, 2) + 0.263) + fb;
+  } else if (x > 8 && x <= 10) {
+    const z = x - 8;
+    a = -1.073 - 0.628 * z + 0.137 * z * z - 0.070 * z * z * z;
+    b = 13.670 + 4.257 * z - 0.420 * z * z + 0.374 * z * z * z;
+  } else return NaN;
+  return a + b / Rv;
+}
+Phys.ccm89 = ccm89;
+
 if (typeof module !== "undefined" && module.exports) module.exports = Phys;
 else root.Phys = Phys;
 })(typeof window !== "undefined" ? window : this);

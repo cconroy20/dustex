@@ -93,6 +93,7 @@ canvas{display:block;width:100%;touch-action:none}
 .legend .sw.dash{border-top-style:dashed}
 .legend .sw.dot{border-top-style:dotted;border-top-width:3px}
 .legend .sw.band{height:10px;border:0;border-radius:2px}
+.svsw{display:inline-block;vertical-align:middle;flex:0 0 auto}
 
 body.tab-grain .only-dist{display:none}
 body.tab-dist .only-grain{display:none}

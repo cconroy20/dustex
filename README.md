@@ -7,8 +7,9 @@ extinction, the albedo, the grain temperature and the infrared emission that res
   absorbed and emitted per gram (equal areas on a log-wavelength axis); the temperature distribution P(T);
   and temperature against radius, which shows where single photons start to matter.
 - **Size distribution**: power laws dn/da ∝ a^-q between a_min and a_max for silicate and graphite,
-  normalized by the Si or C atoms locked in grains; the extinction curve (per H or per A_V) and albedo, and
-  the infrared spectrum λI_λ/N_H, each split by material or by size; and summary numbers per H nucleus.
+  normalized by the Si or C atoms locked in grains; the extinction curve (per H or per A_V, against 1/λ or
+  λ) and albedo, with the Cardelli, Clayton & Mathis (1989) R_V = 3.1 curve as a reference, and the
+  infrared spectrum λI_λ/N_H, each split by material or by size; and summary numbers per H nucleus.
 
 The page runs the whole calculation in the browser, including the Mie series for the single grain and the
 stochastic heating of every size in the distribution; only the Mie efficiencies on the size grid are
@@ -34,6 +35,9 @@ precomputed. PAHs are left out on purpose.
   stochastically: the thermal-continuous approximation of Draine & Li (2001, Sect. 7.2) with their
   finite-bin-width upward rates, solved by the Guhathakurta & Draine (1989) recursion, emission from the
   thermal approximation with photons limited to the grain's energy.
+- **Reference extinction curve**: CCM89 Eqs. (1)–(5) for R_V = 3.1, read from the ADS scan and identical to
+  `dust_extinction`'s implementation to 3e-15; defined for 0.3 ≤ 1/λ ≤ 10 µm⁻¹. Per H it is scaled by
+  A_V/N_H = 3.1 / 5.8e21 mag cm², the gas-to-reddening ratio of Bohlin, Savage & Drake (1978, abstract).
 - **Left out**: PAHs and their bands, non-spherical grains, ices, coatings and porosity, grain charge,
   sublimation (temperatures are capped at 4900 K), and the infrared part of the radiation field.
 
@@ -61,6 +65,10 @@ precomputed. PAHs are left out on purpose.
    with bins of 3% of the mean absorbed photon energy near the peak (400–1500 bins). The transition matrix
    is banded (no photon exceeds 13.6 eV), so the fine binning is cheap in the browser.
 
+7. **CCM89's Table 3 does not match its own equations at B, H and K** (B: 1.337 printed vs 1.323 from Eq. 3;
+   H 0.190 vs 0.192; K 0.114 vs 0.116), although the footnote says the table comes from Eqs. (2)–(3). U, V,
+   R, I and J agree. The equations are used here, as in `dust_extinction`.
+
 ## Files
 
 | File | Purpose |
@@ -69,7 +77,7 @@ precomputed. PAHs are left out on purpose.
 | `web/physics.js` | the browser port of dustlib (checked against it to ~1e-14) |
 | `web/app.js`, `web/index.html`, `web/style.css` | the page |
 | `exportweb.py` | writes `web/data/dust.json` + `dust.bin` (Q tables, dielectric functions, field, enthalpies) |
-| `validate.py` | 27 checks against the sources and of the port; `python3 validate.py` (~40 s) |
+| `validate.py` | 30 checks against the sources and of the port; `python3 validate.py` (~40 s) |
 | `testjs.js` | runs physics.js under node for validate.py |
 | `uitest.js` | drives the page in headless Chrome (sliders, tabs, hovers, clicks, hash, phone width) |
 | `fetch.sh` | downloads every primary source into `rawdata/` |
@@ -91,5 +99,6 @@ node uitest.js                  # with the server running
 Bohren & Huffman (1983), *Absorption and Scattering of Light by Small Particles*, App. A ·
 Draine & Lee (1984, ApJ 285, 89) · Draine & Malhotra (1993, ApJ 414, 632) · Draine (2003, ApJ 598, 1026) ·
 Draine & Li (2001, ApJ 551, 807) · Li & Draine (2001, ApJ 554, 778) · Guhathakurta & Draine (1989, ApJ 345,
-230) · Mathis, Mezger & Panagia (1983, A&A 128, 212) · Mathis, Rumpl & Nordsieck (1977, ApJ 217, 425) ·
+230) · Mathis, Mezger & Panagia (1983, A&A 128, 212) · Cardelli, Clayton & Mathis (1989, ApJ 345, 245) ·
+Bohlin, Savage & Drake (1978, ApJ 224, 132) · Mathis, Rumpl & Nordsieck (1977, ApJ 217, 425) ·
 Fixsen (2009, ApJ 707, 916).

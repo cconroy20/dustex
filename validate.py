@@ -200,6 +200,30 @@ check("extinction and scattering split by size sum to the totals",
 bins = sum(bands_of(e) for e in r["em_size"]).sum()
 check("emission split by size sums to the total", abs(bins / bands_of(sum(r["em"].values())).sum() - 1) < 1e-9)
 
+# ------------------------------------------------------------------ reference extinction curve
+# CCM89 Table 3: x, a(x), b(x) at U B V R I J H K L
+tab3 = [(2.78, 0.9530, 1.9090), (2.27, 0.9982, 1.0495), (1.82, 1.0000, 0.0000), (1.43, 0.8686, -0.3660),
+        (1.11, 0.6800, -0.6239), (0.80, 0.4008, -0.3679), (0.63, 0.2693, -0.2473), (0.46, 0.1615, -0.1483),
+        (0.29, 0.0800, -0.0734)]
+# The table is consistent with the equations at U, V, R, I, J; at B, H and K it is not
+# (B: 1.337 printed, 1.323 from Eq. 3, which dust_extinction also gives) -- see README.
+ok = [0, 2, 3, 4, 5]
+xs = np.array([tab3[k][0] for k in ok])
+ref = np.array([tab3[k][1] + tab3[k][2] / 3.1 for k in ok])
+dev = np.max(abs(D.ccm89(xs) - ref))
+check("CCM89 a(x) + b(x)/3.1 vs their Table 3 at U, V, R, I, J", dev < 1.5e-3, "max dev %.1e" % dev)
+for k, band in [(1, "B"), (6, "H"), (7, "K")]:
+    print("INFO  CCM89 Table 3 at %s: %.4f printed, %.4f from the equations" %
+          (band, tab3[k][1] + tab3[k][2] / 3.1, D.ccm89([tab3[k][0]])[0]))
+try:
+    from dust_extinction.parameter_averages import CCM89
+    import astropy.units as au
+    xx = np.linspace(0.3, 10, 400)
+    dev = np.max(abs(D.ccm89(xx) - CCM89(Rv=3.1)(xx / au.micron)))
+    check("CCM89 vs dust_extinction's implementation, 0.3-10 um^-1", dev < 1e-6, "max dev %.1e" % dev)
+except ImportError:
+    print("SKIP  dust_extinction not installed")
+
 # ------------------------------------------------------------------ browser port
 cases = []
 for mat in ("sil", "gra"):
@@ -211,6 +235,8 @@ for mat, a, U in [("sil", 0.003, 1.0), ("gra", 0.01, 1.0), ("sil", 0.05, 1.0), (
 cases.append(dict(kind="grain", mat="sil", a=float(D.A_GRID[40]), U=3.0, table=40))
 dist = {"sil": dict(q=3.3, amin=0.004, amax=0.3, abund=30.0), "gra": dict(q=3.6, amin=0.006, amax=0.2, abund=200.0)}
 cases.append(dict(kind="dist", U=2.0, params=dist))
+xccm = list(np.linspace(0.2, 10.5, 300))
+cases.append(dict(kind="ccm", x=xccm, Rv=3.1))
 cpath = os.path.join(HERE, "cache", "cases.json")
 json.dump(cases, open(cpath, "w"))
 try:
@@ -220,7 +246,7 @@ except (OSError, subprocess.CalledProcessError) as e:
     js = None
     check("browser port ran under node", False, str(e))
 if js is not None:
-    w_opt = w_g = w_d = 0
+    w_opt = w_g = w_d = w_ccm = 0
     for c, j in zip(cases, js):
         if c["kind"] == "optics":
             Qa, Qs, G = D.optics(c["mat"], c["a"])
@@ -233,6 +259,10 @@ if js is not None:
             b1, b2 = bands_of(em), bands_of(np.array(j["em"]))
             f = b1 / b1.sum()
             w_g = max(w_g, abs(j["Teq"] / g.Teq - 1), abs(j["Pabs"] / g.Pabs - 1), np.max(abs(b2 / b1 - 1)[f > 1e-3]))
+        elif c["kind"] == "ccm":
+            a1, a2 = D.ccm89(c["x"], c["Rv"]), np.array([np.nan if y is None else y for y in j["y"]], float)
+            same_nan = np.array_equal(np.isnan(a1), np.isnan(a2))
+            w_ccm = np.nanmax(abs(a1 - a2)) if same_nan else np.inf
         else:
             rp = D.distribution(c["params"], c["U"], tabs32)
             for mat in c["params"]:
@@ -245,6 +275,7 @@ if js is not None:
                 if rp["ext_size"][k].max() > 0:
                     w_d = max(w_d, np.max(abs(np.array(j["extB"][k]) / rp["ext_size"][k] - 1)),
                               np.max(abs(np.array(j["scaB"][k]) / rp["sca_size"][k] - 1)))
+    check("port: CCM89 curve, including where it is undefined", w_ccm < 1e-12, "worst %.1e" % w_ccm)
     check("port: Mie optics (2 materials x 2 radii, all wavelengths)", w_opt < 1e-9, "worst %.1e" % w_opt)
     check("port: single grains (T_eq, P_abs, band emission; 7 cases)", w_g < 1e-4, "worst %.1e" % w_g)
     check("port: size distribution (extinction and scattering by material and size, mass, emission)", w_d < 1e-4, "worst %.1e" % w_d)

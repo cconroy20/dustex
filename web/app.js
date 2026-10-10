@@ -38,7 +38,7 @@ function mrnDist() {
 }
 function defaults() {
   return { tab: "grain", U: 0, mat: "sil", a: -1, dist: mrnDist(),
-           elog: false, plin: false, sd: "mass", xn: "H", xs: "mat", sp: "mat" };
+           elog: false, plin: false, sd: "mass", xn: "H", xs: "mat", xa: "inv", sp: "mat" };
 }
 const clone = o => JSON.parse(JSON.stringify(o));
 
@@ -269,12 +269,17 @@ function cursorHandle(ctx, A, u) {
   ctx.fillStyle = C.muted;
   ctx.beginPath(); ctx.moveTo(x, b.b - 8); ctx.lineTo(x - 5, b.b); ctx.lineTo(x + 5, b.b); ctx.closePath(); ctx.fill();
 }
+// a line swatch drawn with the same dash pattern as the canvas curve
+function swatch(it, len = 26) {
+  if (it.band) return `<span class="sw band" style="background:${it.color};opacity:${it.alpha || 0.3}"></span>`;
+  const da = it.da || (it.dash ? [6, 3.5] : it.dot ? [2, 3] : []);
+  const w = it.width || 2.5;
+  return `<svg class="svsw" width="${len}" height="10" aria-hidden="true"><line x1="1" y1="5" x2="${len - 1}" y2="5" ` +
+         `stroke="${it.color}" stroke-width="${w}" stroke-dasharray="${da.join(" ")}"/></svg>`;
+}
 function legend(el, items) {
-  el.innerHTML = items.map(it => {
-    const cls = it.band ? "sw band" : "sw" + (it.dash ? " dash" : "") + (it.dot ? " dot" : "");
-    const st = it.band ? `background:${it.color};opacity:${it.alpha || 0.3}` : `border-top-color:${it.color}`;
-    return `<span title="${it.tip || ""}"><span class="${cls}" style="${st}"></span><span>${it.label}</span></span>`;
-  }).join("");
+  el.innerHTML = items.map(it =>
+    `<span title="${it.tip || ""}">${swatch(it)}<span>${it.label}</span></span>`).join("");
 }
 function local(cv, ev) { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
 
@@ -401,7 +406,7 @@ let HOV = null;        // {grp, u} in plot x units of the hovered panel group
 const tip = $("tip");
 function showTip(ev, rows) {
   tip.innerHTML = rows.map(r => r.head ? `<div style="margin-bottom:2px">${r.head}</div>`
-    : `<div class="r"><span>${r.sw ? `<span class="sw" style="border-top-color:${r.sw}${r.dash ? ";border-top-style:dashed" : ""}"></span>` : ""}${r.k}</span><b>${r.v}</b></div>`).join("");
+    : `<div class="r"><span>${r.sw ? swatch({ color: r.sw, da: r.da, dash: r.dash, width: r.w }, 18) + " " : ""}${r.k}</span><b>${r.v}</b></div>`).join("");
   tip.hidden = false;
   const w = tip.offsetWidth, h = tip.offsetHeight;
   let x = ev.clientX + 16, y = ev.clientY + 14;
@@ -697,7 +702,7 @@ function drawS() {
     fillTo(ctx, A, c.us, ys, A.y0, C[m], 0.08);
     curve(ctx, A, us, vs, C[m], 2.2, m === "gra" ? [7, 4] : []);
   }
-  legend($("lgS"), onMats().map(m => ({ color: C[m], dash: m === "gra", label: MATNAME[m] })));
+  legend($("lgS"), onMats().map(m => ({ color: C[m], da: m === "gra" ? [7, 4] : [], label: MATNAME[m] })));
 }
 function hoverS(ev) {
   const cv = $("cvS"), [x] = local(cv, ev), A = AS;
@@ -713,15 +718,22 @@ function hoverS(ev) {
       const k = clamp(Math.round((l - c.us[0]) / (c.us[1] - c.us[0])), 0, c.us.length - 1);
       v = c.vs[k];
     }
-    rows.push({ k: MATNAME[m], v: v > 0 ? numHTML(v, 3) + (S.sd === "mass" ? " g" : " cm<sup>2</sup>") : "none", sw: C[m], dash: m === "gra" });
+    rows.push({ k: MATNAME[m], v: v > 0 ? numHTML(v, 3) + (S.sd === "mass" ? " g" : " cm<sup>2</sup>") : "none", sw: C[m], da: m === "gra" ? [7, 4] : [] });
   }
   showTip(ev, rows);
 }
 
 const XI = [0, 11];                     // inverse wavelength axis (um^-1)
+const XL = [Math.log10(0.09), 0];                 // wavelength axis, 0.09-1 um (log)
+const lamAxis = () => S.xa === "lam";
+const xRange = () => (lamAxis() ? XL : XI);
+const xOf = e => (lamAxis() ? LAMLOG : e.inv);
 const SIZELAB = ["<i>a</i> < 0.01 µm", "0.01–0.1 µm", "> 0.1 µm"];
-// legend entry for a component: silicate dotted, graphite dashed, size bins solid
-const compLegend = c => ({ color: c.color, dash: c.key === "gra", dot: c.key === "sil", label: c.label });
+const MATDASH = { sil: [2, 3], gra: [7, 4] };
+const SIZEDASH = [[2, 3], [7, 4], [12, 3, 3, 3]];        // dotted, dashed, dash-dot
+const compLegend = c => ({ color: c.color, da: c.dash, label: c.label });
+// the reference curve: a broad light band behind the model curves
+const REF = { color: "#b8b0a3", width: 5 };
 function extArrays() {
   const mag = 2.5 / Math.LN10;
   const AV = mag * atLam(DO.extT, KEY_UM.V);
@@ -731,60 +743,75 @@ function extArrays() {
   const tot = Array.from(DO.extT, f);
   const alb = Array.from(DO.scaT, (v, i) => v / DO.extT[i]);
   const comps = S.xs === "mat"
-    ? DO.mats.map(m => ({ key: m, label: MATNAME[m], color: C[m], dash: m === "gra" ? [7, 4] : [2, 3], ext: DO.ext[m], sca: DO.sca[m] }))
-    : DO.extB.map((e, k) => ({ key: "b" + k, label: SIZELAB[k], color: C.size[k], dash: [], ext: e, sca: DO.scaB[k] }))
+    ? DO.mats.map(m => ({ key: m, label: MATNAME[m], color: C[m], dash: MATDASH[m], ext: DO.ext[m], sca: DO.sca[m] }))
+    : DO.extB.map((e, k) => ({ key: "b" + k, label: SIZELAB[k], color: C.size[k], dash: SIZEDASH[k], ext: e, sca: DO.scaB[k] }))
         .filter(c => c.ext.some(v => v > 0));
   for (const c of comps) {
     c.y = Array.from(c.ext, f);
     c.alb = Array.from(c.sca, (v, i) => (c.ext[i] > 0 ? v / c.ext[i] : NaN));
   }
-  return { inv, tot, alb, comps, AV };
+  // Cardelli, Clayton & Mathis (1989) for R_V = 3.1, per A_V or per H (Bohlin et al. 1978)
+  const avnh = 3.1 / P.NH_EBV;
+  const ref = inv.map(x => P.ccm89(x, 3.1) * (S.xn === "H" ? avnh / 1e-21 : 1));
+  return { inv, tot, alb, comps, AV, ref };
 }
 function drawX() {
   const { ctx, w, h } = fit($("cvX"));
   const box = { l: 74, r: w - 18, t: 10, b: h - 6 };
-  if (!DO.mats.length) { const A = axes(box, XI[0], XI[1], 0, 1); frame(ctx, A); AX = null; legend($("lgX"), []); return; }
+  const xr = xRange();
+  if (!DO.mats.length) { const A = axes(box, xr[0], xr[1], 0, 1); frame(ctx, A); AX = null; legend($("lgX"), []); return; }
   const e = extArrays();
-  const mx = Math.max(...e.tot);
-  const A = axes(box, XI[0], XI[1], 0, 1.08 * mx);
+  const xu = xOf(e);
+  let mx = 0;
+  for (let i = 0; i < xu.length; i++) {
+    if (xu[i] < xr[0] || xu[i] > xr[1]) continue;
+    mx = Math.max(mx, e.tot[i], isFinite(e.ref[i]) ? e.ref[i] : 0);
+  }
+  const A = axes(box, xr[0], xr[1], 0, 1.08 * mx);
   AX = A; A.e = e;
   frame(ctx, A);
-  linTicks(ctx, A, "x", 1, false);
+  if (lamAxis()) logTicks(ctx, A, "x", { labels: false }); else linTicks(ctx, A, "x", 1, false);
   linTicks(ctx, A, "y", niceStep(A.y1, 5));
   ylabel(ctx, A, S.xn === "H" ? mk("*A*_{λ} / *N*_{H} (10^{−21} mag cm^{2})") : mk("*A*_{λ} / *A*_{V}"));
   if (HOV && HOV.grp === "x") vline(ctx, A, HOV.u, C.faint);
-  for (const c of e.comps) curve(ctx, A, e.inv, c.y, c.color, 1.8, c.dash);
-  curve(ctx, A, e.inv, e.tot, C.ink, 2.4);
-  legend($("lgX"), [{ color: C.ink, label: "total" }, ...e.comps.map(compLegend)]);
+  curve(ctx, A, xu, e.ref, REF.color, REF.width);
+  for (const c of e.comps) curve(ctx, A, xu, c.y, c.color, 1.8, c.dash);
+  curve(ctx, A, xu, e.tot, C.ink, 2.4);
+  legend($("lgX"), [{ color: C.ink, label: "total" }, ...e.comps.map(compLegend),
+    { color: REF.color, width: REF.width, label: "Cardelli et al. (1989), <i>R</i><sub>V</sub> = 3.1",
+      tip: "The mean Milky Way extinction curve of Cardelli, Clayton & Mathis (1989) for R_V = 3.1, defined from 0.1 to 3.3 um. Per H it is scaled by A_V/N_H = 3.1 / 5.8e21 mag cm^2, from the gas-to-reddening ratio of Bohlin, Savage & Drake (1978)." }]);
 }
 function drawA() {
   const { ctx, w, h } = fit($("cvA"));
-  const A = axes({ l: 74, r: w - 18, t: 6, b: h - 46 }, XI[0], XI[1], 0, 1);
+  const xr = xRange();
+  const A = axes({ l: 74, r: w - 18, t: 6, b: h - 46 }, xr[0], xr[1], 0, 1);
   AA = A;
   frame(ctx, A);
-  linTicks(ctx, A, "x", 1);
+  if (lamAxis()) logTicks(ctx, A, "x", { plain: true }); else linTicks(ctx, A, "x", 1);
   linTicks(ctx, A, "y", 0.5);
-  xlabel(ctx, A, mk("Inverse wavelength 1/λ (µm^{−1})"));
+  xlabel(ctx, A, lamAxis() ? mk("Wavelength λ (µm)") : mk("Inverse wavelength 1/λ (µm^{−1})"));
   ylabel(ctx, A, mk("Albedo"));
   if (!DO.mats.length) return;
   const e = AX ? AX.e : extArrays();
   if (HOV && HOV.grp === "x") vline(ctx, A, HOV.u, C.faint);
-  for (const c of e.comps) curve(ctx, A, e.inv, c.alb, c.color, 1.6, c.dash);
-  curve(ctx, A, e.inv, e.alb, C.ink, 2.2);
+  for (const c of e.comps) curve(ctx, A, xOf(e), c.alb, c.color, 1.6, c.dash);
+  curve(ctx, A, xOf(e), e.alb, C.ink, 2.2);
 }
 function hoverX(ev, cv, A) {
   const [x] = local(cv, ev);
   if (!A || !AX || x < A.box.l || x > A.box.r) { if (HOV && HOV.grp === "x") { HOV = null; drawX(); drawA(); } hideTip(); return; }
-  const inv = clamp(A.ux(x), 1 / P.LAM[P.NL - 1], 1 / P.LAM[0]);
-  const i = lamIndex(-Math.log10(inv)), e = AX.e;
-  HOV = { grp: "x", u: e.inv[i] };
+  const e = AX.e;
+  const i = lamAxis() ? lamIndex(A.ux(x))
+                      : lamIndex(-Math.log10(clamp(A.ux(x), 1 / P.LAM[P.NL - 1], 1 / P.LAM[0])));
+  HOV = { grp: "x", u: lamAxis() ? LAMLOG[i] : e.inv[i] };
   drawX(); drawA();
   const unit = S.xn === "H" ? " × 10<sup>−21</sup>" : "";
   const rows = [{ head: `λ = ${numHTML(P.LAM[i], 3)} µm &nbsp; (1/λ = ${numHTML(e.inv[i], 3)} µm<sup>−1</sup>)` },
     { k: S.xn === "H" ? "<i>A</i><sub>λ</sub>/<i>N</i><sub>H</sub> (mag cm<sup>2</sup>)" : "<i>A</i><sub>λ</sub>/<i>A</i><sub>V</sub>", v: numHTML(e.tot[i], 3) + unit, sw: C.ink }];
-  for (const c of e.comps) rows.push({ k: "&nbsp;&nbsp;" + c.label, v: numHTML(c.y[i], 3) + unit, sw: c.color, dash: c.key === "gra" });
+  for (const c of e.comps) rows.push({ k: "&nbsp;&nbsp;" + c.label, v: numHTML(c.y[i], 3) + unit, sw: c.color, da: c.dash });
+  if (isFinite(e.ref[i])) rows.push({ k: "Cardelli et al.", v: numHTML(e.ref[i], 3) + unit, sw: REF.color, w: REF.width });
   rows.push({ k: "albedo", v: e.alb[i].toFixed(3), sw: C.ink });
-  for (const c of e.comps) if (isFinite(c.alb[i])) rows.push({ k: "&nbsp;&nbsp;" + c.label, v: c.alb[i].toFixed(3), sw: c.color, dash: c.key === "gra" });
+  for (const c of e.comps) if (isFinite(c.alb[i])) rows.push({ k: "&nbsp;&nbsp;" + c.label, v: c.alb[i].toFixed(3), sw: c.color, da: c.dash });
   showTip(ev, rows);
 }
 
@@ -796,8 +823,8 @@ function drawI() {
     const A = axes(box, LXI[0], LXI[1], -30, -26); frame(ctx, A); AI = null; legend($("lgI"), []); return;
   }
   const series = S.sp === "mat"
-    ? DE.mats.map(m => ({ y: DE.em[m], color: C[m], dash: m === "gra" ? [7, 4] : [2, 3], label: MATNAME[m], key: m }))
-    : DE.bins.map((y, k) => ({ y, color: C.size[k], dash: [], label: SIZELAB[k], key: "b" + k })).filter(sr => sr.y.some(v => v > 0));
+    ? DE.mats.map(m => ({ y: DE.em[m], color: C[m], dash: MATDASH[m], label: MATNAME[m], key: m }))
+    : DE.bins.map((y, k) => ({ y, color: C.size[k], dash: SIZEDASH[k], label: SIZELAB[k], key: "b" + k })).filter(sr => sr.y.some(v => v > 0));
   let mx = 0;
   for (let j = 0; j < P.NL; j++) if (P.LAM[j] >= 1) mx = Math.max(mx, DE.tot[j]);
   const top = Math.ceil(Math.log10(mx) * 2 + 0.4) / 2;
@@ -812,7 +839,7 @@ function drawI() {
   if (HOV && HOV.grp === "i") vline(ctx, A, HOV.u, C.faint);
   for (const s of series) curve(ctx, A, LAMLOG, Array.from(s.y, L10), s.color, 1.9, s.dash, alpha);
   curve(ctx, A, LAMLOG, Array.from(DE.tot, L10), C.ink, 2.4, [], alpha);
-  legend($("lgI"), [{ color: C.ink, label: "total" }, ...series.map(s => ({ color: s.color, dash: s.dash.length && s.key === "gra", dot: s.key === "sil", label: s.label }))]);
+  legend($("lgI"), [{ color: C.ink, label: "total" }, ...series.map(s => ({ color: s.color, da: s.dash, label: s.label }))]);
 }
 function hoverI(ev) {
   const cv = $("cvI"), [x] = local(cv, ev), A = AI;
@@ -821,7 +848,7 @@ function hoverI(ev) {
   HOV = { grp: "i", u: LAMLOG[i] };
   drawI();
   const rows = [{ head: `λ = ${numHTML(P.LAM[i], 3)} µm` }, { k: "total", v: numHTML(DE.tot[i], 3), sw: C.ink }];
-  for (const s of A.series) rows.push({ k: s.label, v: numHTML(s.y[i], 3), sw: s.color, dash: s.key === "gra" });
+  for (const s of A.series) rows.push({ k: s.label, v: numHTML(s.y[i], 3), sw: s.color, da: s.dash });
   rows.push({ head: '<span style="color:#6a6560">erg s<sup>−1</sup> sr<sup>−1</sup> H<sup>−1</sup></span>' });
   showTip(ev, rows);
 }
@@ -891,6 +918,7 @@ function syncControls() {
   seg(["sdMass", "sdArea"], S.sd, ["mass", "area"]);
   seg(["xH", "xV"], S.xn, ["H", "V"]);
   seg(["xsMat", "xsSize"], S.xs, ["mat", "size"]);
+  seg(["xaInv", "xaLam"], S.xa, ["inv", "lam"]);
   seg(["spMat", "spSize"], S.sp, ["mat", "size"]);
   $("sU").value = S.U; $("vU").innerHTML = uHTML(S.U);
   $("sA").value = S.a; $("vA").innerHTML = aHTML(Math.pow(10, S.a));
@@ -943,7 +971,7 @@ function saveHash() {
   hashTimer = setTimeout(() => {
     const d = m => { const x = S.dist[m]; return [x.on ? 1 : 0, x.q.toFixed(2), x.amin.toFixed(3), x.amax.toFixed(3), x.abund].join(","); };
     const h = `t=${S.tab}&m=${S.mat}&a=${S.a.toFixed(3)}&U=${S.U.toFixed(2)}&s=${d("sil")}&g=${d("gra")}` +
-              `&el=${S.elog ? 1 : 0}&pl=${S.plin ? 1 : 0}&sd=${S.sd}&xn=${S.xn}&xs=${S.xs}&sp=${S.sp}`;
+              `&el=${S.elog ? 1 : 0}&pl=${S.plin ? 1 : 0}&sd=${S.sd}&xn=${S.xn}&xs=${S.xs}&xa=${S.xa}&sp=${S.sp}`;
     try { history.replaceState(null, "", "#" + h); } catch (e) { /* sandboxed */ }
   }, 250);
 }
@@ -966,6 +994,7 @@ function readHash() {
   if (q.get("sd") === "area") S.sd = "area";
   if (q.get("xn") === "V") S.xn = "V";
   if (q.get("xs") === "size") S.xs = "size";
+  if (q.get("xa") === "lam") S.xa = "lam";
   if (q.get("sp") === "size") S.sp = "size";
 }
 
@@ -987,6 +1016,8 @@ function wire() {
   $("xV").addEventListener("click", () => { S.xn = "V"; changed("view"); });
   $("xsMat").addEventListener("click", () => { S.xs = "mat"; changed("view"); });
   $("xsSize").addEventListener("click", () => { S.xs = "size"; changed("view"); });
+  $("xaInv").addEventListener("click", () => { S.xa = "inv"; changed("view"); });
+  $("xaLam").addEventListener("click", () => { S.xa = "lam"; changed("view"); });
   $("spMat").addEventListener("click", () => { S.sp = "mat"; changed("view"); });
   $("spSize").addEventListener("click", () => { S.sp = "size"; changed("view"); });
   buildDistControls();

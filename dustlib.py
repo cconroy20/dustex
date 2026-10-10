@@ -638,3 +638,36 @@ def distribution(params, U, tables, emis_cache=None):
             sel = (ax >= lo) & (ax < hi)
             out["em_size"][k] += LAM * np.sum((w * sel)[:, None] * per_a3, axis=0) / (4 * np.pi)
     return out
+
+
+# ------------------------------------------------------------------ reference extinction curve
+# Cardelli, Clayton & Mathis (1989, ApJ 345, 245), Eqs. (1)-(5), read from the ADS scan
+# (rawdata/ccm89): A_lambda / A_V = a(x) + b(x) / R_V for 0.3 <= x = 1/lambda <= 10 um^-1.
+# Per H it is scaled by A_V / N_H = R_V / (N_H / E(B-V)) with N_H / E(B-V) = 5.8e21 cm^-2 mag^-1
+# (Bohlin, Savage & Drake 1978, abstract).
+NH_EBV = 5.8e21
+
+
+def ccm89(x, Rv=3.1):
+    """A_lambda / A_V; NaN outside 0.3-10 um^-1."""
+    x = np.atleast_1d(np.asarray(x, float))
+    a = np.full(x.shape, np.nan)
+    b = np.full(x.shape, np.nan)
+    ir = (x >= 0.3) & (x < 1.1)
+    a[ir] = 0.574 * x[ir] ** 1.61
+    b[ir] = -0.527 * x[ir] ** 1.61
+    op = (x >= 1.1) & (x < 3.3)
+    y = x[op] - 1.82
+    a[op] = np.polyval([0.32999, -0.77530, 0.01979, 0.72085, -0.02427, -0.50447, 0.17699, 1.0], y)
+    b[op] = np.polyval([-2.09002, 5.30260, -0.62251, -5.38434, 1.07233, 2.28305, 1.41338, 0.0], y)
+    uv = (x >= 3.3) & (x <= 8)
+    xu = x[uv]
+    fa = np.where(xu >= 5.9, -0.04473 * (xu - 5.9) ** 2 - 0.009779 * (xu - 5.9) ** 3, 0.0)
+    fb = np.where(xu >= 5.9, 0.2130 * (xu - 5.9) ** 2 + 0.1207 * (xu - 5.9) ** 3, 0.0)
+    a[uv] = 1.752 - 0.316 * xu - 0.104 / ((xu - 4.67) ** 2 + 0.341) + fa
+    b[uv] = -3.090 + 1.825 * xu + 1.206 / ((xu - 4.62) ** 2 + 0.263) + fb
+    fu = (x > 8) & (x <= 10)
+    z = x[fu] - 8
+    a[fu] = -1.073 - 0.628 * z + 0.137 * z ** 2 - 0.070 * z ** 3
+    b[fu] = 13.670 + 4.257 * z - 0.420 * z ** 2 + 0.374 * z ** 3
+    return a + b / Rv

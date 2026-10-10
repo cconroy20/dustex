@@ -23,4 +23,11 @@ for i in 1 2 3 4 5; do
   sleep 5
 done
 file rawdata/mmp83/mmp83.pdf | grep -q PDF || { echo "MMP83 scan not fetched"; exit 1; }
+# Cardelli, Clayton & Mathis (1989, ApJ 345, 245): ADS scan (Eqs. 2-5 and Table 3)
+mkdir -p rawdata/ccm89
+for i in 1 2 3 4 5; do
+  curl -sfL --max-time 90 -A "Mozilla/5.0" -o rawdata/ccm89/ccm89.pdf \
+    "https://articles.adsabs.harvard.edu/pdf/1989ApJ...345..245C" && file rawdata/ccm89/ccm89.pdf | grep -q PDF && break
+  sleep 5
+done
 echo "rawdata complete"
