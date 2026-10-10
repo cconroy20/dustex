@@ -1,0 +1,38 @@
+# Mathis, Mezger & Panagia (1983, A&A 128, 212), Table A3: "The ISRF between 0.09 and 8 um
+# at selected galactocentric distances D_G", column D_G = 10 kpc (the solar neighborhood).
+# 4 pi J_lambda in erg cm^-2 s^-1 um^-1.  Transcribed by eye from the ADS scan
+# (rawdata/mmp83/mmp83.pdf, journal page 226), checked at 300 dpi.
+#
+# Two entries are misprinted in the scan by a power of ten and are corrected here:
+#   0.21 um  printed 9.61E-2, between 1.04E-2 (0.20) and 9.17E-3 (0.216)  -> 9.61E-3
+#   3.4  um  printed 6.49E-3, between 1.89E-3 (2.4)  and 3.79E-4 (4.0)    -> 6.49E-4
+# Both corrections are tested in validate.py against the sum of the three diluted
+# blackbodies of MMP83 Table A1, which carries the field longward of 0.3 um.
+# The first entry is printed as 0.091 um; it is taken at the Lyman limit, 0.0912 um.
+#
+# lambda_um   4piJ_lambda
+0.0912  1.07e-2
+0.10    1.47e-2
+0.11    2.04e-2
+0.13    2.05e-2
+0.143   1.82e-2
+0.18    1.24e-2
+0.20    1.04e-2
+0.21    9.61e-3
+0.216   9.17e-3
+0.230   8.25e-3
+0.250   7.27e-3
+0.346   1.30e-2
+0.435   1.50e-2
+0.55    1.57e-2
+0.70    1.53e-2
+0.90    1.32e-2
+1.20    9.26e-3
+1.8     4.06e-3
+2.2     2.41e-3
+2.4     1.89e-3
+3.4     6.49e-4
+4.0     3.79e-4
+5.0     1.76e-4
+6.0     9.21e-5
+8.0     3.22e-5
