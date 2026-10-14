@@ -1,0 +1,114 @@
+:root{
+  --ink:#1a1a1a; --muted:#6a6560; --line:#ded9d0; --bg:#faf8f4;
+  --panel:#fff; --accent:#004C8C;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:18px/1.55 Charter,"PT Serif",Palatino,Georgia,"DejaVu Serif",serif}
+header,main,footer{max-width:1460px;margin:0 auto;padding:0 22px}
+
+#err{position:fixed;inset:0 0 auto 0;z-index:99;background:#7a1420;color:#fff;
+  padding:9px 14px;font:12.5px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap}
+#tip{position:fixed;z-index:50;pointer-events:none;background:rgba(255,255,255,.96);
+  border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:.86rem;line-height:1.4;
+  color:var(--ink);box-shadow:0 2px 8px rgba(0,0,0,.08);white-space:nowrap}
+#tip .r{display:flex;justify-content:space-between;gap:14px}
+#tip .r span{color:var(--muted)}
+#tip .r b{font-weight:500;font-variant-numeric:tabular-nums}
+#tip .sw{display:inline-block;width:16px;height:0;border-top:2.5px solid;vertical-align:middle;margin-right:6px}
+
+.bar{display:flex;align-items:center;gap:22px;flex-wrap:wrap;padding-top:16px;
+  padding-bottom:12px;border-bottom:1px solid var(--line)}
+.mark{font-size:2.0rem;letter-spacing:-.025em;line-height:1.05;white-space:nowrap}
+.ghost{color:var(--muted);font:inherit;font-size:.9rem;flex:0 0 auto;
+  padding:3px 12px;border:1px solid var(--line);border-radius:5px;
+  background:transparent;cursor:pointer}
+.ghost:hover{background:#f1ede5;color:var(--ink)}
+#reset{margin-left:auto}
+
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;flex:0 0 auto}
+.seg button{font:inherit;font-size:.92rem;padding:2px 11px;border:0;
+  background:transparent;color:var(--muted);cursor:pointer;white-space:nowrap}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+.seg.tabs button{font-size:1.02rem;padding:4px 16px}
+.seg.sm button{font-size:.86rem;padding:1px 9px}
+
+main{display:grid;grid-template-columns:300px minmax(0,1fr);gap:20px;
+  align-items:start;padding-top:16px;padding-bottom:8px}
+aside{align-self:stretch}
+.rail{position:sticky;top:10px;display:flex;flex-direction:column;gap:14px}
+aside section,.panel{background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:11px 13px 13px}
+h2{font-size:.93rem;font-weight:600;letter-spacing:.055em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 9px}
+.ph{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.ph h2{margin-bottom:7px}
+.ph .sub{font-size:.9rem;color:var(--muted);margin-left:auto}
+.gh{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.gh .btns{display:flex;gap:6px}
+.gh .ghost{font-size:.82rem;padding:2px 8px}
+
+.ctl{margin-bottom:11px}
+.ctl label{display:flex;justify-content:space-between;align-items:baseline;
+  gap:8px;font-size:1.0rem;color:var(--muted);margin-bottom:2px}
+.ctl .val{color:var(--ink);font-variant-numeric:tabular-nums;font-size:1.0rem;white-space:nowrap}
+input[type=range]{width:100%;accent-color:var(--accent);height:18px;margin:0}
+.caserow{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin:2px 0 12px;font-size:1.0rem;color:var(--muted)}
+.c2{display:flex;align-items:center;gap:7px;font-size:.92rem;color:var(--muted)}
+.c2 label{white-space:nowrap}
+.c2 input[type=checkbox]{accent-color:var(--accent);margin:0}
+
+.mat{border-top:1px solid var(--line);padding-top:9px;margin-top:6px}
+.mat .mh{display:flex;align-items:center;gap:8px;font-size:1.0rem;margin-bottom:6px;cursor:pointer}
+.mat .mh input{accent-color:var(--accent);margin:0}
+.mat .mh .svsw{margin-right:2px}
+.mat.off .ctl{opacity:.4}
+.mat .ctl{margin-bottom:8px}
+.mat .ctl label{font-size:.95rem}
+
+.rd{display:flex;justify-content:space-between;gap:10px;font-size:.95rem;
+  padding:3px 0;border-bottom:1px dotted var(--line)}
+.rd:last-child{border-bottom:none}
+.rd span{color:var(--muted)}
+.rd b{font-weight:500;font-variant-numeric:tabular-nums;text-align:right}
+.rd.gap{margin-top:6px;border-top:1px solid var(--line)}
+#readG{margin-top:6px}
+
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
+.panel.wide{grid-column:1 / -1}
+/* An explicit CSS height is required: fit() sets the backing-store size from
+   the measured box, and without one the new attribute becomes the layout
+   height and the canvas grows on every draw. */
+canvas{display:block;width:100%;touch-action:none}
+#cvQ{height:300px} #cvW{height:128px}
+#cvE{height:428px}
+#cvP{height:330px} #cvT{height:330px}
+#cvS{height:350px}
+#cvX{height:250px} #cvA{height:128px}
+#cvI{height:360px}
+#cvT{cursor:crosshair}
+.legend{display:flex;flex-wrap:wrap;gap:3px 18px;font-size:.9rem;color:var(--muted);margin-top:6px}
+.legend>span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.legend .sw{display:inline-block;width:22px;height:0;border-top:2.5px solid}
+.legend .sw.dash{border-top-style:dashed}
+.legend .sw.dot{border-top-style:dotted;border-top-width:3px}
+.legend .sw.band{height:10px;border:0;border-radius:2px}
+.svsw{display:inline-block;vertical-align:middle;flex:0 0 auto}
+
+body.tab-grain .only-dist{display:none}
+body.tab-dist .only-grain{display:none}
+
+footer{padding:6px 22px 34px;font-size:.93rem;color:var(--muted);line-height:1.55}
+footer p{margin:.5em 0;max-width:110ch}
+.src{font-size:.86rem}
+
+@media (max-width:1180px){ .grid{grid-template-columns:minmax(0,1fr)} }
+@media (max-width:860px){
+  main{grid-template-columns:minmax(0,1fr)}
+  .rail{position:static}
+  header,main,footer{padding-left:16px;padding-right:16px}
+  .mark{font-size:1.6rem;white-space:normal}
+  #reset{margin-left:0}
+}

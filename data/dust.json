@@ -1,0 +1,166 @@
+{
+ "arrays": [
+  {
+   "name": "lam",
+   "dtype": "f8",
+   "offset": 0,
+   "length": 404,
+   "shape": [
+    404
+   ]
+  },
+  {
+   "name": "ustar",
+   "dtype": "f8",
+   "offset": 3232,
+   "length": 404,
+   "shape": [
+    404
+   ]
+  },
+  {
+   "name": "m_sil",
+   "dtype": "f8",
+   "offset": 6464,
+   "length": 808,
+   "shape": [
+    808
+   ]
+  },
+  {
+   "name": "eps_pa0.01",
+   "dtype": "f8",
+   "offset": 12928,
+   "length": 808,
+   "shape": [
+    808
+   ]
+  },
+  {
+   "name": "eps_pa0.10",
+   "dtype": "f8",
+   "offset": 19392,
+   "length": 808,
+   "shape": [
+    808
+   ]
+  },
+  {
+   "name": "eps_pe0.01",
+   "dtype": "f8",
+   "offset": 25856,
+   "length": 808,
+   "shape": [
+    808
+   ]
+  },
+  {
+   "name": "eps_pe0.10",
+   "dtype": "f8",
+   "offset": 32320,
+   "length": 808,
+   "shape": [
+    808
+   ]
+  },
+  {
+   "name": "q_sil",
+   "dtype": "f4",
+   "offset": 38784,
+   "length": 81608,
+   "shape": [
+    2,
+    101,
+    404
+   ]
+  },
+  {
+   "name": "q_gra",
+   "dtype": "f4",
+   "offset": 365216,
+   "length": 81608,
+   "shape": [
+    2,
+    101,
+    404
+   ]
+  },
+  {
+   "name": "lamf",
+   "dtype": "f8",
+   "offset": 691648,
+   "length": 809,
+   "shape": [
+    809
+   ]
+  },
+  {
+   "name": "ustarf",
+   "dtype": "f8",
+   "offset": 698120,
+   "length": 809,
+   "shape": [
+    809
+   ]
+  },
+  {
+   "name": "pah_grid",
+   "dtype": "f8",
+   "offset": 704592,
+   "length": 34,
+   "shape": [
+    34
+   ]
+  },
+  {
+   "name": "tgrid_e",
+   "dtype": "f8",
+   "offset": 704864,
+   "length": 600,
+   "shape": [
+    600
+   ]
+  },
+  {
+   "name": "e_sil",
+   "dtype": "f8",
+   "offset": 709664,
+   "length": 600,
+   "shape": [
+    600
+   ]
+  },
+  {
+   "name": "e_gra",
+   "dtype": "f8",
+   "offset": 714464,
+   "length": 600,
+   "shape": [
+    600
+   ]
+  }
+ ],
+ "a_grid": {
+  "lo": -3.0,
+  "hi": 1.0,
+  "n": 101
+ },
+ "nlam": 404,
+ "T_CMB": 2.7255,
+ "mat": {
+  "sil": {
+   "rho": 3.5,
+   "atoms_per_cm3": 8.56649453475472e+22,
+   "per_key": 7.0
+  },
+  "gra": {
+   "rho": 2.24,
+   "atoms_per_cm3": 1.1172677005051054e+23,
+   "per_key": 1.0
+  }
+ },
+ "mrn": {
+  "sil": 34.164493843054906,
+  "gra": 297.8702518024376
+ }
+}
